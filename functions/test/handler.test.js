@@ -263,6 +263,41 @@ test("a NOT_FOUND query is not logged and not counted as failed", async () => {
   assert.deepEqual(warnings, []);
 });
 
+test("a NOT_FOUND key logs one info line per handler instance, not per refresh", async () => {
+  const clock = { t: START };
+  const fake = createFakeClient({
+    respond: (request) => {
+      if (metricTypeOf(request.filter) === METRIC_TYPES.RUN_CPU) {
+        throw Object.assign(new Error('5 NOT_FOUND: Cannot find metric(s) that match type = "x"'), { code: 5 });
+      }
+      return defaultSeries(request);
+    },
+  });
+  const lines = { info: [], warn: [], error: [] };
+  const handler = createHandler({
+    getClient: () => fake.client,
+    now: () => clock.t,
+    log: {
+      info: (line) => lines.info.push(line),
+      warn: (line) => lines.warn.push(line),
+      error: (line) => lines.error.push(line),
+    },
+  });
+  const first = fakeRes();
+  await handler(fakeReq(), first);
+  assert.equal(first.statusCode, 200);
+  assert.equal(lines.info.length, 1);
+  assert.ok(lines.info[0].includes("key=run.cpu no data (NOT_FOUND)"), lines.info[0]);
+  clock.t = START + 61000;
+  const second = fakeRes();
+  await handler(fakeReq(), second);
+  assert.equal(second.statusCode, 200);
+  assert.equal(fake.calls.length, 26);
+  assert.equal(lines.info.length, 1);
+  assert.ok(!lines.warn.some((line) => line.includes("metric call(s) failed")), lines.warn.join("\n"));
+  assert.deepEqual(lines.error, []);
+});
+
 test("getClient is only called when a refresh starts", async () => {
   const { get, clientCreations } = setup();
   await get({ method: "POST" });

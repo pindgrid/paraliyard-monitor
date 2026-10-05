@@ -32,7 +32,10 @@ function expectedTotal(key: string, values: MetricValue[]): MetricValue {
   if (key === "lastRunAt") {
     return (present as string[]).reduce((a, b) => (Date.parse(b) > Date.parse(a) ? b : a));
   }
-  if (key === "lastResult") return present.includes("failed") ? "failed" : "success";
+  if (key === "lastResult") {
+    if (present.includes("failed")) return "failed";
+    return present.includes("success") ? "success" : "none";
+  }
   const numbers = present.filter((v): v is number => typeof v === "number");
   if (numbers.length === 0) return present.includes("idle") ? "idle" : null;
   if (MAX_KEYS.has(key)) return Math.max(...numbers);

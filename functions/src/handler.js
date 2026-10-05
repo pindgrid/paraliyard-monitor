@@ -14,6 +14,8 @@ const PATH = "/api/metrics";
 // serves the last good data marked stale.
 function createHandler({ getClient, now = Date.now, log = console }) {
   const state = new Map();
+  // Query keys already logged as NOT_FOUND by this instance (one info line each).
+  const notFoundSeen = new Set();
 
   function stateFor(windowKey) {
     if (!state.has(windowKey)) {
@@ -25,7 +27,7 @@ function createHandler({ getClient, now = Date.now, log = console }) {
   async function refresh(windowKey, entry) {
     const nowMs = now();
     try {
-      const results = await collect(getClient(), buildRequests(windowKey, nowMs), { log });
+      const results = await collect(getClient(), buildRequests(windowKey, nowMs), { log, notFoundSeen });
       entry.data = buildPayload({ results, windowKey, nowMs });
       entry.stale = false;
       const failed = Object.values(results).filter((r) => !r.ok).length;

@@ -73,8 +73,60 @@ test("interval follows the window except for the fixed lookbacks", () => {
       assert.equal(request.interval.endTime.seconds, nowSeconds);
       const span = nowSeconds - request.interval.startTime.seconds;
       if (key === "bucket.bytes") assert.equal(span, 48 * 3600);
-      else if (key === "scheduler.attempts") assert.equal(span, 8 * 24 * 3600);
+      else if (key === "scheduler.runs") assert.equal(span, 691200);
       else assert.equal(span, seconds);
     }
   }
+});
+
+test("cpu and memory use p99 with max across series, never ALIGN_MEAN", () => {
+  const p99Types = new Set([METRIC_TYPES.RUN_CPU, METRIC_TYPES.RUN_MEMORY, METRIC_TYPES.GEN1_MEMORY]);
+  for (const windowKey of ["1h", "6h"]) {
+    const matching = buildRequests(windowKey, NOW).filter(({ request }) => p99Types.has(metricTypeOf(request.filter)));
+    assert.equal(matching.length, 3);
+    for (const { key, request } of matching) {
+      assert.equal(request.aggregation.perSeriesAligner, "ALIGN_PERCENTILE_99", key);
+      assert.equal(request.aggregation.crossSeriesReducer, "REDUCE_MAX", key);
+      assert.notEqual(request.aggregation.perSeriesAligner, "ALIGN_MEAN", key);
+    }
+  }
+});
+
+test("one scheduler query on the job functions' Cloud Run request_count", () => {
+  const nowSeconds = NOW / 1000;
+  for (const windowKey of ["1h", "6h"]) {
+    const matching = buildRequests(windowKey, NOW).filter((r) => r.key === "scheduler.runs");
+    assert.equal(matching.length, 1);
+    const { request } = matching[0];
+    for (const clause of [
+      'metric.type = "run.googleapis.com/request_count"',
+      'resource.type = "cloud_run_revision"',
+      'resource.labels.service_name = one_of("pynightlyexport", "pyweeklyaccounts")',
+      'resource.labels.location = "asia-south1"',
+    ]) {
+      assert.ok(request.filter.includes(clause), request.filter);
+    }
+    assert.equal(nowSeconds - request.interval.startTime.seconds, 691200);
+    assert.equal(request.aggregation.alignmentPeriod.seconds, 300);
+    assert.equal(request.aggregation.perSeriesAligner, "ALIGN_DELTA");
+    assert.equal(request.aggregation.crossSeriesReducer, "REDUCE_SUM");
+    assert.ok(request.aggregation.groupByFields.includes("resource.labels.service_name"));
+    assert.ok(request.aggregation.groupByFields.includes("metric.labels.response_code_class"));
+  }
+});
+
+test("the function2 request_count filter is unchanged", () => {
+  const { request } = buildRequests("1h", NOW).find((r) => r.key === "run.requests");
+  assert.equal(
+    request.filter,
+    [
+      'metric.type = "run.googleapis.com/request_count"',
+      'resource.type = "cloud_run_revision"',
+      "resource.labels.service_name = one_of(" +
+        '"pynightlyexport", "pyreadstockistdocs", "pyyardstaffonwrite", "pymintoncrewclaim", ' +
+        '"pydeleteaccountonrequest", "pystaffloginonrequest", "pyweeklyaccounts", ' +
+        '"pypushonnotification", "pymintonrolerequest")',
+      'resource.labels.location = "asia-south1"',
+    ].join(" AND "),
+  );
 });

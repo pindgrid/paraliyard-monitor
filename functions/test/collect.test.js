@@ -111,6 +111,53 @@ test("all calls NOT_FOUND does not reject", async () => {
   for (const r of Object.values(results)) assert.deepEqual(r, { ok: true, series: [] });
 });
 
+function notFoundOnFirst(request, index) {
+  if (index === 0) throw Object.assign(new Error(NOT_FOUND_MESSAGE), { code: 5 });
+  return [];
+}
+
+function infoLog() {
+  const info = [];
+  const warn = [];
+  return { info, warn, log: { info: (line) => info.push(line), warn: (line) => warn.push(line) } };
+}
+
+test("NOT_FOUND logs one info line for its key and no warn line", async () => {
+  const requests = buildRequests("1h", NOW);
+  const target = requests[0].key;
+  const fake = createFakeClient({ respond: notFoundOnFirst });
+  const { info, warn, log } = infoLog();
+  const results = await collect(fake.client, requests, { log });
+  assert.deepEqual(results[target], { ok: true, series: [] });
+  assert.equal(info.length, 1);
+  assert.ok(info[0].includes(`key=${target} no data (NOT_FOUND)`), info[0]);
+  assert.deepEqual(warn, []);
+});
+
+test("a shared notFoundSeen set logs each NOT_FOUND key only once", async () => {
+  const requests = buildRequests("1h", NOW);
+  const notFoundSeen = new Set();
+  const { info, log } = infoLog();
+  await collect(createFakeClient({ respond: notFoundOnFirst }).client, requests, { log, notFoundSeen });
+  assert.equal(info.length, 1);
+  const results = await collect(createFakeClient({ respond: notFoundOnFirst }).client, requests, {
+    log,
+    notFoundSeen,
+  });
+  assert.equal(info.length, 1);
+  assert.deepEqual(results[requests[0].key], { ok: true, series: [] });
+});
+
+test("NOT_FOUND with a log that has no info method does not throw", async () => {
+  const requests = buildRequests("1h", NOW);
+  const fake = createFakeClient({ respond: notFoundOnFirst });
+  const { lines, log } = recordingLog();
+  const results = await collect(fake.client, requests, { log });
+  assert.deepEqual(results[requests[0].key], { ok: true, series: [] });
+  for (const r of Object.values(results)) assert.equal(r.ok, true);
+  assert.deepEqual(lines, []);
+});
+
 test("an empty series list is a successful call", async () => {
   const fake = createFakeClient({ respond: () => [] });
   const results = await collect(fake.client, buildRequests("1h", NOW));

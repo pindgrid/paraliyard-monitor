@@ -5,7 +5,7 @@ const { normalizeWindow } = require("./queries");
 
 // Metric keys per kind, in display order, then the *At keys. Unknown values
 // (failed or missing call) are always null; a successful call with no data
-// is "idle" for gauges and 0 for counts.
+// is "idle" for gauges, 0 for counts and "none" for the scheduler lastResult.
 const METRIC_KEYS = Object.freeze({
   function2: Object.freeze(["cpuPct", "memPct", "reqPerMin", "errPerMin", "instances", "cpuAt", "memAt"]),
   function1: Object.freeze(["cpuPct", "execPerMin", "memBytes", "memPct", "memAt"]),
@@ -21,6 +21,8 @@ const MAX_KEYS = new Set(["cpuPct", "memPct"]);
 const AT_KEYS = Object.freeze({ cpuAt: "cpuPct", memAt: "memPct" });
 
 const IDLE = "idle";
+// lastResult when the scheduler call succeeded but the job had no run in the lookback.
+const NO_RUN = "none";
 
 function toNumber(value) {
   if (value === null || value === undefined) return null;
@@ -147,11 +149,6 @@ function withLabel(seriesList, label, values) {
   return seriesList.filter((s) => values.includes(s.metric && s.metric.labels && s.metric.labels[label]));
 }
 
-// assumption: confirm in Metrics Explorer. HTTP 2xx (or the gRPC name "OK") means success.
-function isSuccessCode(code) {
-  return /^2\d\d$/.test(String(code)) || code === "OK";
-}
-
 function function2Metrics(results, service, windowSeconds, nowMs) {
   const requests = seriesFor(results, "run.requests", service);
   let errPerMin = null;
@@ -215,32 +212,38 @@ function bucketMetrics(results, service, windowSeconds, nowMs) {
   };
 }
 
-function hostingMetrics(results, service) {
+function hostingMetrics(results, service, windowSeconds, nowMs) {
   const sent = seriesFor(results, "hosting.sentBytes", service);
   return {
     metrics: {
-      bytesServed: sumOf(sent),
+      // Bytes served: null when the call failed, 0 when it succeeded without points.
+      bytesServed: sent ? sumOf(sent) || 0 : null,
     },
-    points: trendOf([sent]),
+    points: trendOrFlat([sent], windowSeconds, nowMs),
   };
 }
 
+// Last run from the job function's request_count: null when the call failed,
+// "none" when it succeeded without requests in the lookback. A run succeeded
+// when every response class with requests at the newest time is 2xx.
 function schedulerMetrics(results, service, windowSeconds, nowMs) {
-  const attempts = seriesFor(results, "scheduler.attempts", service);
+  const runs = seriesFor(results, "scheduler.runs", service);
   let lastRunAt = null;
   let lastResult = null;
-  if (attempts) {
-    const runs = pointsOf(attempts).filter((p) => p.v > 0);
-    if (runs.length > 0) {
-      const newest = Math.max(...runs.map((p) => p.t));
-      const atNewest = runs.filter((p) => p.t === newest);
+  if (runs) {
+    const active = pointsOf(runs).filter((p) => p.v > 0);
+    if (active.length === 0) {
+      lastResult = NO_RUN;
+    } else {
+      const newest = Math.max(...active.map((p) => p.t));
+      const atNewest = active.filter((p) => p.t === newest);
       lastRunAt = new Date(newest).toISOString();
-      lastResult = atNewest.every((p) => isSuccessCode(p.labels.response_code)) ? "success" : "failed";
+      lastResult = atNewest.every((p) => p.labels.response_code_class === "2xx") ? "success" : "failed";
     }
   }
   return {
     metrics: { lastRunAt, lastResult },
-    points: trendOf([attempts], nowMs - windowSeconds * 1000),
+    points: trendOf([runs], nowMs - windowSeconds * 1000),
   };
 }
 
@@ -257,7 +260,10 @@ function totalFor(key, values) {
   const present = values.filter((v) => v !== null && v !== undefined);
   if (present.length === 0) return null;
   if (key === "lastRunAt") return present.reduce((a, b) => (Date.parse(b) > Date.parse(a) ? b : a));
-  if (key === "lastResult") return present.includes("failed") ? "failed" : "success";
+  if (key === "lastResult") {
+    if (present.includes("failed")) return "failed";
+    return present.includes("success") ? "success" : NO_RUN;
+  }
   const numbers = present.filter((v) => typeof v === "number");
   if (numbers.length === 0) return present.includes(IDLE) ? IDLE : null;
   if (MAX_KEYS.has(key)) return Math.max(...numbers);

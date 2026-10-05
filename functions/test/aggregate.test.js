@@ -5,7 +5,7 @@ require("./no-network");
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { SERVICES, GEN1_MEMORY_BYTES } = require("../src/constants");
-const { buildPayload, METRIC_KEYS } = require("../src/aggregate");
+const { buildPayload, METRIC_KEYS, totalFor } = require("../src/aggregate");
 
 const NOW = Date.UTC(2026, 0, 1, 12, 0, 0);
 const MINUTE = 60000;
@@ -143,33 +143,76 @@ test("bucket bytes use the latest point and hosting sums bytes", () => {
   assert.equal("reqPerMin" in hosting, false);
 });
 
-test("scheduler last run and result", () => {
-  const nightly = { job_id: "firebase-schedule-pyNightlyExport-asia-south1" };
-  const weekly = { job_id: "firebase-schedule-pyWeeklyAccounts-asia-south1" };
-  const HOUR = 3600000;
+test("successful hosting query with no series gives 0 bytes served", () => {
+  const payload = buildPayload({ results: { "hosting.sentBytes": ok() }, windowKey: "1h", nowMs: NOW });
+  assert.equal(find(payload, "hosting:paraliyard").metrics.bytesServed, 0);
+  assert.equal(find(payload, "hosting:preparaliyard").metrics.bytesServed, 0);
+  assert.equal(payload.totals.hosting.bytesServed, 0);
+});
+
+test("failed hosting query keeps bytes served null", () => {
+  const payload = buildPayload({ results: { "hosting.sentBytes": { ok: false } }, windowKey: "1h", nowMs: NOW });
+  assert.equal(find(payload, "hosting:paraliyard").metrics.bytesServed, null);
+  assert.equal(find(payload, "hosting:preparaliyard").metrics.bytesServed, null);
+  assert.equal(payload.totals.hosting.bytesServed, null);
+});
+
+const NIGHTLY = { service_name: "pynightlyexport" };
+const WEEKLY = { service_name: "pyweeklyaccounts" };
+const FIVE_MINUTES = 300000;
+
+test("scheduler last run and result from request_count classes", () => {
   const results = {
-    "scheduler.attempts": ok(
-      series(nightly, [0, 0, 1], { response_code: "200" }, HOUR),
-      series(nightly, [0, 1], { response_code: "500" }, HOUR),
-      series(weekly, [0, 0, 0, 1], { response_code: "200" }, HOUR),
+    "scheduler.runs": ok(
+      series(NIGHTLY, [0, 0, 1], { response_code_class: "2xx" }, FIVE_MINUTES),
+      series(NIGHTLY, [0, 0, 1], { response_code_class: "5xx" }, FIVE_MINUTES),
+      series(WEEKLY, [0, 0, 0, 2], { response_code_class: "2xx" }, FIVE_MINUTES),
+      series(WEEKLY, [0, 0, 0, 0], { response_code_class: "4xx" }, FIVE_MINUTES),
     ),
   };
   const payload = buildPayload({ results, windowKey: "1h", nowMs: NOW });
   const n = find(payload, "scheduler:pyNightlyExport").metrics;
-  assert.equal(n.lastRunAt, new Date(NOW - HOUR).toISOString());
+  assert.equal(n.lastRunAt, new Date(NOW - 2 * FIVE_MINUTES).toISOString());
   assert.equal(n.lastResult, "failed");
   const w = find(payload, "scheduler:pyWeeklyAccounts").metrics;
-  assert.equal(w.lastRunAt, new Date(NOW - 3 * HOUR).toISOString());
+  assert.equal(w.lastRunAt, new Date(NOW - 3 * FIVE_MINUTES).toISOString());
   assert.equal(w.lastResult, "success");
   assert.equal(payload.totals.scheduler.lastRunAt, n.lastRunAt);
   assert.equal(payload.totals.scheduler.lastResult, "failed");
 });
 
-test("scheduler with no attempts has null run and result", () => {
-  const results = { "scheduler.attempts": ok(series({ job_id: "firebase-schedule-pyNightlyExport-asia-south1" }, [0, 0])) };
-  const n = find(buildPayload({ results, windowKey: "1h", nowMs: NOW }), "scheduler:pyNightlyExport").metrics;
+test("scheduler with no requests in a successful query is a distinct no-run value", () => {
+  const results = { "scheduler.runs": ok(series(NIGHTLY, [0, 0], { response_code_class: "2xx" }, FIVE_MINUTES)) };
+  const payload = buildPayload({ results, windowKey: "1h", nowMs: NOW });
+  // Only zero values.
+  const n = find(payload, "scheduler:pyNightlyExport").metrics;
   assert.equal(n.lastRunAt, null);
-  assert.equal(n.lastResult, null);
+  assert.equal(n.lastResult, "none");
+  // No series at all.
+  const w = find(payload, "scheduler:pyWeeklyAccounts").metrics;
+  assert.equal(w.lastRunAt, null);
+  assert.equal(w.lastResult, "none");
+  assert.equal(payload.totals.scheduler.lastRunAt, null);
+  assert.equal(payload.totals.scheduler.lastResult, "none");
+});
+
+test("failed scheduler query keeps run and result null", () => {
+  const payload = buildPayload({ results: { "scheduler.runs": { ok: false } }, windowKey: "1h", nowMs: NOW });
+  for (const id of ["scheduler:pyNightlyExport", "scheduler:pyWeeklyAccounts"]) {
+    assert.deepEqual(find(payload, id).metrics, { lastRunAt: null, lastResult: null }, id);
+  }
+  assert.deepEqual(payload.totals.scheduler, { lastRunAt: null, lastResult: null });
+});
+
+test("scheduler totals: failed over success over none", () => {
+  const results = { "scheduler.runs": ok(series(WEEKLY, [0, 1], { response_code_class: "2xx" }, FIVE_MINUTES)) };
+  const totals = buildPayload({ results, windowKey: "1h", nowMs: NOW }).totals.scheduler;
+  assert.equal(totals.lastResult, "success");
+  assert.equal(totals.lastRunAt, new Date(NOW - FIVE_MINUTES).toISOString());
+  assert.equal(totalFor("lastResult", ["none", "none"]), "none");
+  assert.equal(totalFor("lastResult", ["none", "success"]), "success");
+  assert.equal(totalFor("lastResult", ["success", "none", "failed"]), "failed");
+  assert.equal(totalFor("lastResult", [null, null]), null);
 });
 
 test("totals sum rates, take max of percentages and are null when all null", () => {
@@ -210,7 +253,7 @@ const ALL_KEYS = [
   "bucket.requests",
   "bucket.bytes",
   "hosting.sentBytes",
-  "scheduler.attempts",
+  "scheduler.runs",
 ];
 
 function allEmpty() {
@@ -240,6 +283,9 @@ test("every query with an empty series list gives idle gauges and zero counts", 
   assert.equal(fs.writesPerMin, 0);
   assert.equal(fs.deletesPerMin, 0);
   for (const s of payload.services.filter((v) => v.kind === "bucket")) assert.equal(s.metrics.reqPerMin, 0, s.id);
+  assert.equal(find(payload, "hosting:paraliyard").metrics.bytesServed, 0);
+  assert.equal(find(payload, "hosting:preparaliyard").metrics.bytesServed, 0);
+  assert.equal(payload.totals.hosting.bytesServed, 0);
 });
 
 test("failed calls keep every affected metric null", () => {

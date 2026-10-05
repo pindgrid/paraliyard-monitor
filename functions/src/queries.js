@@ -7,6 +7,7 @@ const {
   DEFAULT_WINDOW,
   ALIGNMENT_SECONDS,
   LONG_ALIGNMENT_SECONDS,
+  SCHEDULER_ALIGNMENT_SECONDS,
   BUCKET_BYTES_LOOKBACK_SECONDS,
   SCHEDULER_LOOKBACK_SECONDS,
   PAGE_SIZE,
@@ -19,9 +20,12 @@ const M = METRIC_TYPES;
 
 // The fixed set of 13 queries. Each one covers every service of one kind.
 // Aligners and reducers are assumptions: confirm in Metrics Explorer.
+// CPU and memory are DELTA distributions, so they are read as the p99 per
+// bucket (max across instances); user_memory_bytes is still divided by
+// GEN1_MEMORY_BYTES and the utilisations are still multiplied by 100.
 const QUERY_DEFS = Object.freeze([
-  { key: "run.cpu", kind: "function2", metricType: M.RUN_CPU, aligner: "ALIGN_MEAN", reducer: "REDUCE_MAX" },
-  { key: "run.memory", kind: "function2", metricType: M.RUN_MEMORY, aligner: "ALIGN_MEAN", reducer: "REDUCE_MAX" },
+  { key: "run.cpu", kind: "function2", metricType: M.RUN_CPU, aligner: "ALIGN_PERCENTILE_99", reducer: "REDUCE_MAX" },
+  { key: "run.memory", kind: "function2", metricType: M.RUN_MEMORY, aligner: "ALIGN_PERCENTILE_99", reducer: "REDUCE_MAX" },
   {
     key: "run.requests",
     kind: "function2",
@@ -32,7 +36,7 @@ const QUERY_DEFS = Object.freeze([
   },
   { key: "run.instances", kind: "function2", metricType: M.RUN_INSTANCES, aligner: "ALIGN_MAX", reducer: "REDUCE_SUM" },
   { key: "gen1.executions", kind: "function1", metricType: M.GEN1_EXECUTIONS, aligner: "ALIGN_DELTA", reducer: "REDUCE_SUM" },
-  { key: "gen1.memory", kind: "function1", metricType: M.GEN1_MEMORY, aligner: "ALIGN_MEAN", reducer: "REDUCE_MAX" },
+  { key: "gen1.memory", kind: "function1", metricType: M.GEN1_MEMORY, aligner: "ALIGN_PERCENTILE_99", reducer: "REDUCE_MAX" },
   { key: "firestore.reads", kind: "firestore", metricType: M.FIRESTORE_READS, aligner: "ALIGN_DELTA", reducer: "REDUCE_SUM" },
   { key: "firestore.writes", kind: "firestore", metricType: M.FIRESTORE_WRITES, aligner: "ALIGN_DELTA", reducer: "REDUCE_SUM" },
   { key: "firestore.deletes", kind: "firestore", metricType: M.FIRESTORE_DELETES, aligner: "ALIGN_DELTA", reducer: "REDUCE_SUM" },
@@ -47,13 +51,14 @@ const QUERY_DEFS = Object.freeze([
   },
   { key: "hosting.sentBytes", kind: "hosting", metricType: M.HOSTING_SENT_BYTES, aligner: "ALIGN_DELTA", reducer: "REDUCE_SUM" },
   {
-    key: "scheduler.attempts",
+    key: "scheduler.runs",
     kind: "scheduler",
-    metricType: M.SCHEDULER_ATTEMPTS,
+    metricType: M.RUN_REQUESTS,
     aligner: "ALIGN_DELTA",
     reducer: "REDUCE_SUM",
-    metricLabels: ["response_code"],
+    metricLabels: ["response_code_class"],
     lookbackSeconds: SCHEDULER_LOOKBACK_SECONDS,
+    alignmentSeconds: SCHEDULER_ALIGNMENT_SECONDS,
   },
 ]);
 
@@ -76,7 +81,7 @@ function buildFilter(def) {
     `resource.type = ${quote(resource.type)}`,
     `resource.labels.${resource.label} = one_of(${labelValues.join(", ")})`,
   ];
-  if (def.kind === "function2") clauses.push(`resource.labels.location = ${quote(REGION)}`);
+  if (resource.type === "cloud_run_revision") clauses.push(`resource.labels.location = ${quote(REGION)}`);
   return clauses.join(" AND ");
 }
 
@@ -89,7 +94,8 @@ function buildRequests(windowKey, nowMs) {
   return QUERY_DEFS.map((def) => {
     const resource = RESOURCES[def.kind];
     const lookbackSeconds = def.lookbackSeconds || windowSeconds;
-    const alignmentSeconds = def.lookbackSeconds ? LONG_ALIGNMENT_SECONDS : ALIGNMENT_SECONDS;
+    const alignmentSeconds =
+      def.alignmentSeconds || (def.lookbackSeconds ? LONG_ALIGNMENT_SECONDS : ALIGNMENT_SECONDS);
     const groupByFields = [`resource.labels.${resource.label}`];
     for (const label of def.metricLabels || []) groupByFields.push(`metric.labels.${label}`);
     return {

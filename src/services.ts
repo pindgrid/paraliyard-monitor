@@ -45,8 +45,8 @@ export interface Column {
 // Metric columns per kind, in the same key order as the API.
 export const COLUMNS: Record<Kind, readonly Column[]> = {
   function2: [
-    { key: "cpuPct", label: "CPU %" },
-    { key: "memPct", label: "RAM %" },
+    { key: "cpuPct", label: "CPU % (p99)" },
+    { key: "memPct", label: "RAM % (p99)" },
     { key: "reqPerMin", label: "Requests/min" },
     { key: "errPerMin", label: "Errors/min" },
     { key: "instances", label: "Instances" },
@@ -54,8 +54,8 @@ export const COLUMNS: Record<Kind, readonly Column[]> = {
   function1: [
     { key: "cpuPct", label: "CPU %" },
     { key: "execPerMin", label: "Executions/min" },
-    { key: "memBytes", label: "Memory" },
-    { key: "memPct", label: "RAM %" },
+    { key: "memBytes", label: "Memory (p99)" },
+    { key: "memPct", label: "RAM % (p99)" },
   ],
   firestore: [
     { key: "readsPerMin", label: "Reads/min" },

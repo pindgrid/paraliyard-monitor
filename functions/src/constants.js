@@ -13,9 +13,12 @@ const WINDOWS = Object.freeze({ "1h": 3600, "6h": 21600 });
 const DEFAULT_WINDOW = "1h";
 
 const ALIGNMENT_SECONDS = 60;
-// Alignment for the long lookbacks (bucket bytes, scheduler attempts) so a
-// single page covers the whole lookback.
+// Alignment for the long lookbacks without their own alignment (bucket bytes)
+// so a single page covers the whole lookback.
 const LONG_ALIGNMENT_SECONDS = 3600;
+// Scheduler runs are read in 5-minute buckets so the run time stays precise
+// over the 8-day lookback (at most 2304 points per series).
+const SCHEDULER_ALIGNMENT_SECONDS = 300;
 const BUCKET_BYTES_LOOKBACK_SECONDS = 48 * 3600;
 const SCHEDULER_LOOKBACK_SECONDS = 8 * 24 * 3600;
 
@@ -41,8 +44,8 @@ const RESOURCES = Object.freeze({
   bucket: Object.freeze({ type: "gcs_bucket", label: "bucket_name" }),
   // assumption: confirm in Metrics Explorer
   hosting: Object.freeze({ type: "firebase_domain", label: "domain_name" }),
-  // assumption: confirm in Metrics Explorer
-  scheduler: Object.freeze({ type: "cloud_scheduler_job", label: "job_id" }),
+  // assumption: confirm in Metrics Explorer (each job is read from its function's Cloud Run service)
+  scheduler: Object.freeze({ type: "cloud_run_revision", label: "service_name" }),
 });
 
 // Fixed allowlist of metric types. Nothing outside this list is ever queried.
@@ -71,8 +74,6 @@ const METRIC_TYPES = Object.freeze({
   BUCKET_BYTES: "storage.googleapis.com/storage/total_bytes",
   // assumption: confirm in Metrics Explorer
   HOSTING_SENT_BYTES: "firebasehosting.googleapis.com/network/sent_bytes_count",
-  // assumption: confirm in Metrics Explorer (success uses metric.labels.response_code)
-  SCHEDULER_ATTEMPTS: "cloudscheduler.googleapis.com/job/attempt_count",
 });
 
 function service(kind, name, resourceLabel) {
@@ -85,10 +86,11 @@ function gen2(name) {
   return service("function2", name, name.toLowerCase());
 }
 
-// Scheduler jobs created by Firebase are named firebase-schedule-<function>-<region>.
+// A scheduled job is read from its function's Cloud Run request_count (service
+// named after the function in lower case), so manual HTTP calls also count as runs.
 // assumption: confirm in Metrics Explorer
 function job(name) {
-  return service("scheduler", name, `firebase-schedule-${name}-${REGION}`);
+  return service("scheduler", name, name.toLowerCase());
 }
 
 // One entry per row of data/paraliyard-services.csv.
@@ -121,6 +123,7 @@ module.exports = {
   DEFAULT_WINDOW,
   ALIGNMENT_SECONDS,
   LONG_ALIGNMENT_SECONDS,
+  SCHEDULER_ALIGNMENT_SECONDS,
   BUCKET_BYTES_LOOKBACK_SECONDS,
   SCHEDULER_LOOKBACK_SECONDS,
   CACHE_TTL_MS,

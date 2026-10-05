@@ -1,4 +1,4 @@
-import { NOT_AVAILABLE, ageText, formatValue } from "./format";
+import { NOT_AVAILABLE, NO_RUN, ageText, formatValue } from "./format";
 import { AGE_KEYS, COLUMNS, KIND_LABELS, KIND_ORDER, MAX_KEYS } from "./services";
 import { sparkline } from "./sparkline";
 import type { Kind, MetricRecord, MetricsResponse, ServiceInfo, ServiceMetrics } from "./types";
@@ -71,6 +71,24 @@ function valueCell(
   return td;
 }
 
+const NO_RUN_KEYS: ReadonlySet<string> = new Set(["lastRunAt", "lastResult"]);
+
+// Cell for one metric of a record. A scheduler record with lastResult "none"
+// shows "no run in 8 days" in both of its cells.
+function metricCell(
+  doc: Document,
+  key: string,
+  metrics: MetricRecord | undefined,
+  options: CellOptions = {},
+): HTMLElement {
+  if (NO_RUN_KEYS.has(key) && metrics?.lastResult === "none") {
+    const td = el(doc, "td", NO_RUN);
+    td.dataset.key = key;
+    return td;
+  }
+  return valueCell(doc, key, metrics?.[key], options);
+}
+
 function ageOf(metrics: MetricRecord | undefined, key: string, generatedAt: string | undefined): string | null {
   const atKey = AGE_KEYS[key];
   const at = atKey ? metrics?.[atKey] : undefined;
@@ -105,7 +123,7 @@ function renderKind(
     row.appendChild(el(doc, "th", service.name)).setAttribute("scope", "row");
     for (const column of columns) {
       const age = ageOf(data?.metrics, column.key, generatedAt);
-      row.appendChild(valueCell(doc, column.key, data?.metrics[column.key], { age }));
+      row.appendChild(metricCell(doc, column.key, data?.metrics, { age }));
     }
     const trend = el(doc, "td", undefined, "trend");
     trend.appendChild(sparkline(data?.trend.points ?? [], doc));
@@ -120,7 +138,7 @@ function renderKind(
   for (const column of columns) {
     const prefix = MAX_KEYS.has(column.key) ? "max " : "";
     const age = ageOf(totals, column.key, generatedAt);
-    totalsRow.appendChild(valueCell(doc, column.key, totals?.[column.key], { prefix, age, ageAsTitle: true }));
+    totalsRow.appendChild(metricCell(doc, column.key, totals, { prefix, age, ageAsTitle: true }));
   }
   totalsRow.appendChild(el(doc, "td", "", "trend"));
   table.appendChild(el(doc, "tfoot")).appendChild(totalsRow);

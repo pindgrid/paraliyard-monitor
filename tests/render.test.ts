@@ -9,8 +9,8 @@ function fixture(): MetricsResponse {
 }
 
 const EXPECTED_HEADERS: Record<string, string[]> = {
-  function2: ["Name", "CPU %", "RAM %", "Requests/min", "Errors/min", "Instances", "Trend"],
-  function1: ["Name", "CPU %", "Executions/min", "Memory", "RAM %", "Trend"],
+  function2: ["Name", "CPU % (p99)", "RAM % (p99)", "Requests/min", "Errors/min", "Instances", "Trend"],
+  function1: ["Name", "CPU %", "Executions/min", "Memory (p99)", "RAM % (p99)", "Trend"],
   firestore: ["Name", "Reads/min", "Writes/min", "Deletes/min", "Trend"],
   bucket: ["Name", "Requests/min", "Bytes stored", "Trend"],
   hosting: ["Name", "Bytes served", "Trend"],
@@ -209,6 +209,32 @@ describe("renderDashboard", () => {
     const cpu = fn2?.querySelector<HTMLElement>('[data-key="cpuPct"]');
     expect(cpu?.textContent).toBe("max 21.4 %");
     expect(cpu?.title).toBe("23 min ago");
+  });
+
+  it("shows no run in 8 days for a job without runs, not available for a failed query", () => {
+    const data = fixture();
+    const nightly = data.services.find((s) => s.id === "scheduler:pyNightlyExport");
+    const weekly = data.services.find((s) => s.id === "scheduler:pyWeeklyAccounts");
+    const totals = data.totals.scheduler;
+    if (!nightly || !weekly || !totals) throw new Error("fixture missing scheduler data");
+    nightly.metrics.lastRunAt = null;
+    nightly.metrics.lastResult = "none";
+    weekly.metrics.lastRunAt = null;
+    weekly.metrics.lastResult = null;
+    totals.lastRunAt = null;
+    totals.lastResult = "none";
+    renderDashboard(root, SERVICES, data, { state: "ok" });
+    for (const key of ["lastRunAt", "lastResult"]) {
+      const noRun = cell("scheduler:pyNightlyExport", key);
+      expect(noRun.textContent, key).toBe("no run in 8 days");
+      expect(noRun.classList.contains("na"), key).toBe(false);
+      const failed = cell("scheduler:pyWeeklyAccounts", key);
+      expect(failed.textContent, key).toBe("not available");
+      expect(failed.classList.contains("na"), key).toBe(true);
+      const total = root.querySelector<HTMLElement>(`tr[data-totals="scheduler"] [data-key="${key}"]`);
+      expect(total?.textContent, key).toBe("no run in 8 days");
+      expect(total?.classList.contains("na"), key).toBe(false);
+    }
   });
 
   it("paused shows only the paused message", () => {

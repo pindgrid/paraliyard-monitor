@@ -5,16 +5,17 @@
 // listTimeSeries is ever used.
 
 const { RESOURCES, SERVICES } = require("../src/constants");
-const { QUERY_DEFS } = require("../src/queries");
+const { QUERY_DEFS, buildFilter } = require("../src/queries");
 
 function metricTypeOf(filter) {
   const match = /metric\.type = "([^"]+)"/.exec(filter);
   return match ? match[1] : null;
 }
 
+// Matches on the whole filter too: run.requests and scheduler.runs share a metric type.
 function defOf(request) {
   const type = metricTypeOf(request.filter);
-  return QUERY_DEFS.find((d) => d.metricType === type) || null;
+  return QUERY_DEFS.find((d) => d.metricType === type && request.filter === buildFilter(d)) || null;
 }
 
 function point(endMs, value) {
@@ -38,8 +39,8 @@ function defaultSeries(request) {
     if (def.key === "run.requests") {
       out.push({ resource, metric: { labels: { response_code_class: "2xx" } }, points });
       out.push({ resource, metric: { labels: { response_code_class: "5xx" } }, points: [point(endMs, 1)] });
-    } else if (def.key === "scheduler.attempts") {
-      out.push({ resource, metric: { labels: { response_code: "200" } }, points: [point(endMs - 3600000, 1)] });
+    } else if (def.key === "scheduler.runs") {
+      out.push({ resource, metric: { labels: { response_code_class: "2xx" } }, points: [point(endMs - 3600000, 1)] });
     } else {
       out.push({ resource, metric: { labels: {} }, points });
     }

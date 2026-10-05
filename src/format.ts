@@ -2,6 +2,8 @@ import type { MetricValue } from "./types";
 
 export const NOT_AVAILABLE = "not available";
 export const IDLE = "idle";
+// Scheduler job with no run in the 8-day lookback (API lastResult "none").
+export const NO_RUN = "no run in 8 days";
 
 const PERCENT_KEYS = new Set(["cpuPct", "memPct"]);
 const RATE_KEYS = new Set(["reqPerMin", "errPerMin", "execPerMin", "readsPerMin", "writesPerMin", "deletesPerMin"]);
@@ -44,6 +46,7 @@ export function ageText(generatedAtIso: string | null | undefined, atIso: string
 // Display text for one metric. Missing values are always "not available", never 0.
 export function formatValue(key: string, v: MetricValue | undefined): string {
   if (v === null || v === undefined) return NOT_AVAILABLE;
+  if (key === "lastResult" && v === "none") return NO_RUN;
   if (typeof v === "string") return key === "lastRunAt" ? formatTime(v) : v;
   if (!Number.isFinite(v)) return NOT_AVAILABLE;
   if (v === 0) return "0";

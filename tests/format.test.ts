@@ -36,6 +36,7 @@ describe("formatValue", () => {
     expect(formatValue("lastRunAt", "garbage")).toBe("not available");
     expect(formatValue("lastResult", "success")).toBe("success");
     expect(formatValue("lastResult", "failed")).toBe("failed");
+    expect(formatValue("lastResult", "none")).toBe("no run in 8 days");
   });
 
   it("treats non-finite numbers as not available", () => {

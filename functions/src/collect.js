@@ -17,7 +17,7 @@ function callOptions() {
 
 const MESSAGE_LIMIT = 200;
 const NOT_FOUND = 5;
-const silentLog = { warn() {} };
+const silentLog = { info() {}, warn() {} };
 
 // NOT_FOUND means the metric has no data yet (e.g. a service that never ran).
 function isNotFound(err) {
@@ -36,8 +36,9 @@ function failureLine(key, err) {
 
 // Runs the fixed request list with at most MAX_CONCURRENT_CALLS in flight.
 // Returns { [key]: { ok: true, series } | { ok: false } }. NOT_FOUND counts as
-// a successful call with no series; other errors are logged via log.warn.
-async function collect(client, requests, { log = silentLog } = {}) {
+// a successful call with no series and is logged via log.info (when present)
+// once per key in notFoundSeen; other errors are logged via log.warn.
+async function collect(client, requests, { log = silentLog, notFoundSeen = new Set() } = {}) {
   const results = {};
   let next = 0;
   let failures = 0;
@@ -54,6 +55,10 @@ async function collect(client, requests, { log = silentLog } = {}) {
       } catch (err) {
         if (isNotFound(err)) {
           results[key] = { ok: true, series: [] };
+          if (!notFoundSeen.has(key)) {
+            notFoundSeen.add(key);
+            if (typeof log.info === "function") log.info(`liveMonitorApi: key=${key} no data (NOT_FOUND)`);
+          }
         } else {
           results[key] = { ok: false };
           failures += 1;

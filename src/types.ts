@@ -47,7 +47,8 @@ export interface HostingMetrics {
   bytesServed: number | null;
 }
 
-export type SchedulerResult = "success" | "failed";
+// "none": the call succeeded but the job had no run in the 8-day lookback.
+export type SchedulerResult = "success" | "failed" | "none";
 
 export interface SchedulerMetrics {
   lastRunAt: string | null;
