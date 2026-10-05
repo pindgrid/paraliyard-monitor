@@ -44,6 +44,18 @@ function allFailed() {
   return Object.fromEntries(ALL_KEYS.map((key) => [key, { ok: false }]));
 }
 
+// The payload with the scheduler lastRunAt / lastResult blanked: iteration 8
+// replaced the newest-bucket rule with scheduled occurrences (tested in
+// aggregate.test.js), every other field must stay the same.
+function withoutRunRule(payload) {
+  const blank = { lastRunAt: "(run rule)", lastResult: "(run rule)" };
+  return {
+    ...payload,
+    services: payload.services.map((s) => (s.kind === "scheduler" ? { ...s, metrics: blank } : s)),
+    totals: { ...payload.totals, scheduler: blank },
+  };
+}
+
 // The payload without the iteration-5 additions.
 function withoutAdded(payload) {
   return {
@@ -203,7 +215,7 @@ test("every pre-existing payload field is unchanged (deep-equal with iteration 4
     for (const windowKey of ["1h", "6h"]) {
       const current = buildPayload({ results, windowKey, nowMs: NOW });
       const before = iteration4.buildPayload({ results, windowKey, nowMs: NOW });
-      assert.deepEqual(withoutAdded(current), before, `case ${i} ${windowKey}`);
+      assert.deepEqual(withoutRunRule(withoutAdded(current)), withoutRunRule(before), `case ${i} ${windowKey}`);
     }
   }
   assert.equal(fake.calls.length, 13);

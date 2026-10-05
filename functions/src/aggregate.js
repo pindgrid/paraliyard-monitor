@@ -1,8 +1,18 @@
 "use strict";
 
-const { WINDOWS, GEN1_MEMORY_BYTES, KINDS, RESOURCES, SERVICES, JOB_SCHEDULES } = require("./constants");
+const {
+  WINDOWS,
+  GEN1_MEMORY_BYTES,
+  KINDS,
+  RESOURCES,
+  SERVICES,
+  JOB_SCHEDULES,
+  SCHEDULER_ALIGNMENT_SECONDS,
+  SCHEDULER_LOOKBACK_SECONDS,
+} = require("./constants");
 const { normalizeWindow } = require("./queries");
 const { nextRunAt } = require("./schedule");
+const { classifyRuns, latestClosedRun } = require("./runs");
 
 // Metric keys per kind, in display order, then the *At keys. Unknown values
 // (failed or missing call) are always null; a successful call with no data
@@ -52,7 +62,7 @@ const MAX_KEYS = new Set(["cpuPct", "memPct"]);
 const AT_KEYS = Object.freeze({ cpuAt: "cpuPct", memAt: "memPct" });
 
 const IDLE = "idle";
-// lastResult when the scheduler call succeeded but the job had no run in the lookback.
+// lastResult when the scheduler call succeeded but the lookback holds no closed occurrence.
 const NO_RUN = "none";
 
 function toNumber(value) {
@@ -326,22 +336,25 @@ function hostingMetrics(results, service, windowSeconds, nowMs) {
   };
 }
 
-// Last run from the job function's request_count: null when the call failed,
-// "none" when it succeeded without requests in the lookback. A run succeeded
-// when every response class with requests at the newest time is 2xx.
+// Last run from the job function's request_count: the latest scheduled
+// occurrence whose run window has closed (see runs.js), so off-schedule calls
+// never count. lastRunAt is its scheduled time and lastResult its result
+// (success, failed or missed). null when the call failed, "none" when the
+// lookback holds no closed occurrence.
 function schedulerMetrics(results, service, windowSeconds, nowMs) {
   const runs = seriesFor(results, "scheduler.runs", service);
   let lastRunAt = null;
   let lastResult = null;
-  if (runs) {
-    const active = pointsOf(runs).filter((p) => p.v > 0);
-    if (active.length === 0) {
+  const job = JOB_SCHEDULES[service.id];
+  if (runs && job) {
+    const fromMs = nowMs - SCHEDULER_LOOKBACK_SECONDS * 1000;
+    const classified = classifyRuns(runs, job.cron, fromMs, nowMs, SCHEDULER_ALIGNMENT_SECONDS);
+    const last = latestClosedRun(classified.runs, nowMs);
+    if (last === null) {
       lastResult = NO_RUN;
     } else {
-      const newest = Math.max(...active.map((p) => p.t));
-      const atNewest = active.filter((p) => p.t === newest);
-      lastRunAt = new Date(newest).toISOString();
-      lastResult = atNewest.every((p) => p.labels.response_code_class === "2xx") ? "success" : "failed";
+      lastRunAt = new Date(last.at).toISOString();
+      lastResult = last.result;
     }
   }
   return {
@@ -366,7 +379,9 @@ function totalFor(key, values) {
   if (present.length === 0) return null;
   if (key === "lastRunAt") return present.reduce((a, b) => (Date.parse(b) > Date.parse(a) ? b : a));
   if (key === "lastResult") {
+    // Worst first: failed, missed, success, none.
     if (present.includes("failed")) return "failed";
+    if (present.includes("missed")) return "missed";
     return present.includes("success") ? "success" : NO_RUN;
   }
   const numbers = present.filter((v) => typeof v === "number");
@@ -433,6 +448,7 @@ module.exports = {
   SCHEDULE_KEYS,
   buildPayload,
   buildTotals,
+  pointsOf,
   totalFor,
   trendOf,
 };

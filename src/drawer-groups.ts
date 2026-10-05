@@ -1,4 +1,4 @@
-import { fmt, shortBucket, type Formatter } from "./fmt";
+import { BYTE_AXIS_MIN, fmt, shortBucket, type Formatter } from "./fmt";
 import { addSeries, latestValue, recentSeries } from "./recent";
 import { PROJECT_ID, RECENT_KEYS, SERVICES } from "./services";
 import type { HistoryRange, MetricsResponse, ServiceInfo } from "./types";
@@ -38,6 +38,8 @@ export interface AxisSpec {
   title: string;
   format: Formatter;
   max?: number;
+  // Byte axes span at least BYTE_AXIS_MIN.
+  suggestedMax?: number;
   // A level (e.g. bytes stored) does not start at zero.
   level?: boolean;
 }
@@ -84,7 +86,7 @@ function functionGroup(service: ServiceInfo, opener: string): DrawerGroup {
       ? "1st gen Cloud Function. Executions per minute; memory is in the legend."
       : "2nd gen Cloud Function. Instances, CPU and RAM are in the legend.",
     axes: gen1
-      ? { y: { title: "per minute", format: fmt.int }, y1: { title: "memory", format: fmt.bytes } }
+      ? { y: { title: "per minute", format: fmt.int }, y1: { title: "memory", format: fmt.bytes, suggestedMax: BYTE_AXIS_MIN } }
       : { y: { title: "per minute", format: fmt.int }, y1: { title: "percent", format: fmt.pct, max: 100 } },
     series,
   });
@@ -111,7 +113,7 @@ function sitesGroup(opener: string, siteId: string | null): DrawerGroup {
     target: siteId ?? "total:hosting",
     title: siteId && site ? `Hosting: ${site.name}` : "Firebase Hosting",
     sub: "Bytes served per minute (per bucket on ranges over 6 hours)",
-    axes: { y: { title: "bytes", format: fmt.bytes } },
+    axes: { y: { title: "bytes", format: fmt.bytes, suggestedMax: BYTE_AXIS_MIN } },
     series,
   });
 }
@@ -155,7 +157,7 @@ export function groupFor(opener: string): DrawerGroup | null {
       target: "total:bucket",
       title: "Storage, all buckets",
       sub: "Bytes stored over time",
-      axes: { y: { title: "stored", format: fmt.bytes, level: true } },
+      axes: { y: { title: "stored", format: fmt.bytes, level: true, suggestedMax: BYTE_AXIS_MIN } },
       series: [
         { service: "total:bucket", metric: "bytesStored", label: "All buckets", color: "--ink-2", axis: "y", format: fmt.bytes },
         ...buckets.map((b, i) => ({
@@ -184,7 +186,7 @@ export function groupFor(opener: string): DrawerGroup | null {
       target: service.id,
       title: shortBucket(service.name, PROJECT_ID),
       sub: `Storage bucket ${service.name}`,
-      axes: { y: { title: "stored", format: fmt.bytes, level: true }, y1: { title: "requests/min", format: fmt.int } },
+      axes: { y: { title: "stored", format: fmt.bytes, level: true, suggestedMax: BYTE_AXIS_MIN }, y1: { title: "requests/min", format: fmt.int } },
       series: [
         { service: service.id, metric: "bytesStored", label: "Bytes stored", color: BUCKET_COLORS[buckets.indexOf(service) % 4], axis: "y", fill: true, format: fmt.bytes },
         { service: service.id, metric: "reqPerMin", label: "Requests/min", color: "--canal", axis: "y1", format: fmt.int },
@@ -198,7 +200,7 @@ export function groupFor(opener: string): DrawerGroup | null {
       target: service.id,
       type: "runs",
       title: service.name,
-      sub: "Cloud Scheduler job. Runs are read from the function's requests, so times are approximate.",
+      sub: "Cloud Scheduler job. One run per scheduled time, from the function's requests in the 30 minutes after it.",
       ranges: JOB_RANGES,
       defaultRange: "30d",
       axes: { y: { title: "seconds", format: fmt.seconds } },

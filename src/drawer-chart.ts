@@ -18,7 +18,7 @@ import {
   type LegendItem,
   type TooltipItem,
 } from "chart.js";
-import type { Formatter } from "./fmt";
+import { uniqueTicks, type Formatter } from "./fmt";
 import { alpha, applyTheme, INK_2, INK_3, RULE, tooltipStyle } from "./page-chart-config";
 
 Chart.register(LineController, BarController, LineElement, BarElement, PointElement, LinearScale, CategoryScale, Tooltip, Legend, Filler);
@@ -45,6 +45,8 @@ export interface DrawerAxis {
   title: string;
   format: Formatter;
   max?: number;
+  // The axis spans at least up to this value (e.g. 1 kB for bytes).
+  suggestedMax?: number;
   level?: boolean;
 }
 
@@ -119,21 +121,24 @@ export function drawerConfig(spec: DrawerChartSpec): ChartConfiguration {
         x: line
           ? { type: "linear", min: spec.from, max: spec.to, grid: { display: false }, ticks: { color: INK_3, maxTicksLimit: 7, maxRotation: 0, callback: (v) => (spec.formatTick ?? spec.formatX)(Number(v)) } }
           : { type: "category", grid: { display: false }, ticks: { color: INK_3, maxTicksLimit: 10, maxRotation: 0 } },
+        // Tick labels never repeat (e.g. "1.0 kB" twice on a small byte axis).
         y: {
           beginAtZero: !spec.axes.y.level,
           max: spec.axes.y.max,
+          suggestedMax: spec.axes.y.suggestedMax,
           grid: { color: RULE },
           title: { display: true, text: spec.axes.y.title, color: INK_3 },
-          ticks: { color: INK_3, maxTicksLimit: 6, callback: (v) => spec.axes.y.format(Number(v)) },
+          ticks: { color: INK_3, maxTicksLimit: 6, callback: uniqueTicks(spec.axes.y.format) },
         },
         y1: {
           display: hasY1,
           position: "right",
           beginAtZero: true,
           max: spec.axes.y1?.max,
+          suggestedMax: spec.axes.y1?.suggestedMax,
           grid: { display: false },
           title: { display: hasY1, text: spec.axes.y1?.title ?? "", color: INK_3 },
-          ticks: { color: INK_3, maxTicksLimit: 6, callback: (v) => (spec.axes.y1?.format ?? spec.axes.y.format)(Number(v)) },
+          ticks: { color: INK_3, maxTicksLimit: 6, callback: uniqueTicks(spec.axes.y1?.format ?? spec.axes.y.format) },
         },
       },
       plugins: {

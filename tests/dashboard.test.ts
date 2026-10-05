@@ -326,6 +326,33 @@ describe("day squares", () => {
     const weekly = [...root.querySelectorAll('[data-job-id="scheduler:pyWeeklyAccounts"] .days i')];
     expect(weekly.every((d) => d.className === "")).toBe(true);
   });
+
+  it("draw a missed occurrence red with a 'missed' title", () => {
+    const at = (day: number) => new Date(Date.UTC(2026, 9, day, 2, 30) - 330 * 60000).toISOString();
+    const runs: HistoryPoint[] = [
+      { t: at(4), v: 0, result: "missed", requests: 0, failed: 0 },
+      { t: at(5), v: 1, result: "success", requests: 1, failed: 0 },
+    ];
+    renderDashboard(root, data, status({ runs: { "scheduler:pyNightlyExport": runs, "scheduler:pyWeeklyAccounts": [] } }));
+    const days = [...root.querySelectorAll<HTMLElement>('[data-job-id="scheduler:pyNightlyExport"] .days i')];
+    expect(days[12].className).toBe("fail");
+    expect(days[12].dataset.day).toBe("missed");
+    expect(days[12].title).toBe("4 Oct: missed");
+    expect(days[13].className).toBe("ok");
+  });
+});
+
+describe("last run badge", () => {
+  it("shows a missed badge with the failed styling", () => {
+    const nightly = service("scheduler:pyNightlyExport");
+    nightly.metrics.lastRunAt = "2026-10-04T21:00:00.000Z";
+    nightly.metrics.lastResult = "missed";
+    renderDashboard(root, data, status());
+    const badge = root.querySelector('[data-job-id="scheduler:pyNightlyExport"] .last .badge')!;
+    expect(text(badge)).toBe("missed");
+    expect(badge.classList.contains("fail")).toBe(true);
+    expect(text(root.querySelector('[data-job-id="scheduler:pyNightlyExport"] .last'))).toContain("5 Oct 2026, 2:30:00 am");
+  });
 });
 
 describe("focus", () => {

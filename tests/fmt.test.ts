@@ -1,5 +1,36 @@
 import { describe, expect, it } from "vitest";
-import { DASH, istDateTime, istDay, istDayTime, istShortTime, istTick, istTime } from "../src/fmt";
+import { BYTE_AXIS_MIN, DASH, fmt, istDateTime, istDay, istDayTime, istShortTime, istTick, istTime, uniqueTicks } from "../src/fmt";
+
+// The ticks Chart.js would generate from min to max in steps.
+function ticksOf(min: number, max: number, step: number): { value: number }[] {
+  const out: { value: number }[] = [];
+  for (let i = 0; min + i * step <= max + 1e-9; i += 1) out.push({ value: Number((min + i * step).toFixed(6)) });
+  return out;
+}
+
+describe("uniqueTicks", () => {
+  it("hides a tick whose label repeats the previous one", () => {
+    const callback = uniqueTicks(fmt.bytes);
+    const ticks = ticksOf(0, 1, 0.2);
+    const labels = ticks.map((t, i) => callback(t.value, i, ticks));
+    expect(labels).toEqual(["0", "0 B", null, "1 B", null, null]);
+    const shown = labels.filter((l) => l !== null);
+    expect(new Set(shown).size).toBe(shown.length);
+  });
+
+  it("keeps every label of a 0..1 kB axis", () => {
+    const callback = uniqueTicks(fmt.bytes);
+    const ticks = ticksOf(0, 1000, 200);
+    expect(ticks.map((t, i) => callback(t.value, i, ticks))).toEqual(["0", "200 B", "400 B", "600 B", "800 B", "1.0 kB"]);
+    expect(BYTE_AXIS_MIN).toBe(1000);
+  });
+
+  it("accepts string values and leaves distinct labels alone", () => {
+    const callback = uniqueTicks(fmt.int);
+    const ticks = ticksOf(0, 4, 1);
+    expect(ticks.map((t, i) => callback(String(t.value), i, ticks))).toEqual(["0", "1", "2", "3", "4"]);
+  });
+});
 
 // Epoch ms of a wall-clock time in IST (UTC+05:30).
 function ist(month: number, day: number, hour: number, minute: number, second = 0): number {

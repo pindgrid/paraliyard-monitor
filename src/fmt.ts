@@ -23,6 +23,20 @@ export const fmt = {
   }) as Formatter,
 };
 
+// Byte axes show at least 0..1 kB, so an all-zero or tiny series does not get
+// fractional byte ticks.
+export const BYTE_AXIS_MIN = 1000;
+
+// A Chart.js tick callback that formats each tick and hides it (null) when its
+// label equals the previous tick's, so an axis never repeats a label.
+export function uniqueTicks(format: Formatter) {
+  return (value: number | string, index: number, ticks: readonly { value: number }[]): string | null => {
+    const label = format(Number(value));
+    const previous = index > 0 ? ticks[index - 1] : undefined;
+    return previous !== undefined && format(Number(previous.value)) === label ? null : label;
+  };
+}
+
 const IST = "Asia/Kolkata";
 const DAY_MS = 86400000;
 

@@ -47,8 +47,10 @@ export interface HostingMetrics {
   bytesServed: number | null;
 }
 
-// "none": the call succeeded but the job had no run in the 8-day lookback.
-export type SchedulerResult = "success" | "failed" | "none";
+// Result of the latest scheduled occurrence whose 30-minute run window has
+// closed. "missed": no request in that window. "none": the call succeeded but
+// the 8-day lookback holds no closed occurrence.
+export type SchedulerResult = "success" | "failed" | "missed" | "none";
 
 export interface SchedulerMetrics {
   lastRunAt: string | null;
@@ -111,9 +113,21 @@ export type HistoryRange = "1h" | "6h" | "24h" | "7d" | "30d" | "6w";
 // Totals over every service of one kind (GET /api/history only).
 export type AggregateId = "total:function2" | "total:bucket" | "total:hosting";
 
-// A history point; scheduler runs also carry the non-2xx part as failed.
+export type RunResult = "success" | "failed" | "missed" | "upcoming";
+
+// A history point. Scheduler runs have one point per scheduled occurrence:
+// t is the scheduled time, v and requests the requests in its run window,
+// failed the non-2xx part of them and result the run's outcome.
 export interface HistoryPoint extends TrendPoint {
   failed?: number;
+  result?: RunResult;
+  requests?: number;
+}
+
+// Requests outside every run window (manual or off-schedule calls).
+export interface OtherCalls {
+  count: number;
+  failed: number;
 }
 
 // GET /api/history response.
@@ -124,6 +138,8 @@ export interface HistoryResponse {
   unit: string;
   points: HistoryPoint[];
   generatedAt: string;
+  // Scheduler runs only.
+  otherCalls?: OtherCalls;
   stale?: boolean;
 }
 

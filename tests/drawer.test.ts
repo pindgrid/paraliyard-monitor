@@ -4,7 +4,7 @@ import { bindOpeners, createDrawer, type Drawer } from "../src/drawer";
 import type { DrawerChartSpec } from "../src/drawer-chart";
 import { createMockHistorySource, type HistorySource } from "../src/history-source";
 import { createMockSource } from "../src/source";
-import type { HistoryRange, MetricsResponse } from "../src/types";
+import type { HistoryRange, HistoryResponse, MetricsResponse } from "../src/types";
 
 const NOW = Date.UTC(2026, 9, 5, 8, 30, 0);
 
@@ -286,7 +286,9 @@ describe("CSV", () => {
     const runs = (await readBlob(blobs[1])).split("\n");
     expect(runs[0]).toBe("time,result,duration_s");
     expect(runs.length).toBeGreaterThan(20);
-    expect(runs.slice(1).every((l) => /^\S+Z,(success|failed),\d+$/.test(l))).toBe(true);
+    // A missed run has no duration.
+    expect(runs.slice(1).every((l) => /^\S+Z,((success|failed),\d+|missed,)$/.test(l))).toBe(true);
+    expect(runs.some((l) => l.includes(",missed,"))).toBe(true);
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 });
@@ -325,13 +327,143 @@ describe("ranges", () => {
     expect(rows.length).toBeGreaterThan(20);
     expect(rows[0].querySelector("td")?.textContent).toMatch(/^around \d+ \w+ \d{4}, \d{1,2}:\d\d:\d\d [ap]m$/);
     expect(rows.some((r) => r.textContent?.includes("failed"))).toBe(true);
-    expect(rows.every((r) => /^\d+s$/.test(r.querySelectorAll("td")[2].textContent ?? ""))).toBe(true);
+    // Runs that happened have a duration; a missed run has none.
+    for (const r of rows) {
+      const duration = r.querySelectorAll("td")[2].textContent ?? "";
+      if (r.querySelector('[data-result="missed"]')) expect(duration).toBe("—");
+      else expect(duration).toMatch(/^\d+s$/);
+    }
     expect(charts[0].spec.kind).toBe("bar");
     loads = [];
     aside().querySelector<HTMLElement>('[data-range="6w"]')!.click();
     await drawer.settled();
     expect(loads.map((l) => l.range)).toEqual(["6w", "6w"]);
     expect(onRange).toHaveBeenCalledWith("6w");
+  });
+});
+
+describe("job runs are scheduled occurrences", () => {
+  // Scheduled 02:30 IST (21:00 UTC the day before).
+  const at = (day: number) => Date.UTC(2026, 9, day - 1, 21, 0);
+  const iso = (ms: number) => new Date(ms).toISOString();
+
+  // A /api/history-shaped fixture for pyNightlyExport.
+  function fixtureSource(): HistorySource {
+    return {
+      async load(service, metric, range): Promise<HistoryResponse> {
+        const base = { service, metric, range, generatedAt: iso(NOW) };
+        if (metric === "runs") {
+          return {
+            ...base,
+            unit: "runs",
+            points: [
+              { t: iso(at(1)), v: 1, result: "success", requests: 1, failed: 0 },
+              { t: iso(at(2)), v: 2, result: "failed", requests: 2, failed: 1 },
+              { t: iso(at(3)), v: 0, result: "missed", requests: 0, failed: 0 },
+              { t: iso(at(4)), v: 1, result: "success", requests: 1, failed: 0 },
+              { t: iso(at(6)), v: 0, result: "upcoming", requests: 0, failed: 0 },
+            ],
+            otherCalls: { count: 6, failed: 4 },
+          };
+        }
+        // Two 5-minute buckets in the 1 Oct window (the max counts), one in
+        // the 2 Oct window, one outside every window.
+        return {
+          ...base,
+          unit: "seconds",
+          points: [
+            { t: iso(at(1) + 300000), v: 40 },
+            { t: iso(at(1) + 600000), v: 55 },
+            { t: iso(at(2) + 300000), v: 61 },
+            { t: iso(at(2) + 6 * 3600000), v: 999 },
+          ],
+        };
+      },
+    };
+  }
+
+  function openFixture() {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const blobs: Blob[] = [];
+    Object.assign(URL, {
+      createObjectURL: (b: Blob) => {
+        blobs.push(b);
+        return "blob:test";
+      },
+      revokeObjectURL: vi.fn(),
+    });
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    const own = createDrawer({ doc: document, host, source: fixtureSource(), now: () => NOW, onClose: () => own.close(), createChart: () => ({ setVisible() {}, setData() {}, destroy() {} }) });
+    own.open("job:scheduler:pyNightlyExport");
+    return { own, host, blobs };
+  }
+
+  it("lists only closed occurrences with success, failed and missed badges", async () => {
+    const { own, host } = openFixture();
+    await own.settled();
+    const rows = [...host.querySelectorAll('[data-table="runs"] tbody tr')];
+    // Newest first; the upcoming occurrence is left out.
+    expect(rows.map((r) => r.querySelector(".badge")?.textContent)).toEqual(["success", "missed", "failed", "success"]);
+    expect(rows.map((r) => r.querySelector("td")?.textContent)).toEqual([
+      "around 4 Oct 2026, 2:30:00 am",
+      "around 3 Oct 2026, 2:30:00 am",
+      "around 2 Oct 2026, 2:30:00 am",
+      "around 1 Oct 2026, 2:30:00 am",
+    ]);
+    const missed = rows[1].querySelector(".badge")!;
+    expect(missed.getAttribute("data-result")).toBe("missed");
+    expect(missed.classList.contains("fail")).toBe(true);
+    // Duration: the max over buckets overlapping the run window; none when missed.
+    expect(rows.map((r) => r.querySelectorAll("td")[2].textContent)).toEqual(["—", "—", "61s", "55s"]);
+    own.destroy();
+  });
+
+  it("shows other calls with their failures, apart from Runs and the success rate", async () => {
+    const { own, host } = openFixture();
+    await own.settled();
+    const heads = [...host.querySelectorAll('[data-table="summary"] thead th')].map((th) => th.textContent);
+    const cells = [...host.querySelectorAll('[data-table="summary"] tbody td')].map((td) => td.textContent);
+    const cell = (name: string) => cells[heads.indexOf(name)];
+    expect(heads).toContain("Other calls");
+    expect(cell("Other calls")).toBe("6 (4 failed)");
+    // 4 closed occurrences, 2 succeeded: the 6 other calls (4 failed) are not counted.
+    expect(cell("Runs")).toBe("4");
+    expect(cell("Succeeded")).toBe("2");
+    expect(cell("Success rate")).toBe("50%");
+    own.destroy();
+  });
+
+  it("the CSV has a result column with missed runs", async () => {
+    const { own, host, blobs } = openFixture();
+    await own.settled();
+    host.querySelector<HTMLElement>('[data-d="csv"]')!.click();
+    const text =
+      typeof blobs[0].text === "function"
+        ? await blobs[0].text()
+        : await new Promise<string>((resolve) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(String(reader.result));
+            reader.readAsText(blobs[0]);
+          });
+    expect(text.split("\n")).toEqual([
+      "time,result,duration_s",
+      `${iso(at(1))},success,55`,
+      `${iso(at(2))},failed,61`,
+      `${iso(at(3))},missed,`,
+      `${iso(at(4))},success,`,
+    ]);
+    own.destroy();
+  });
+
+  it("with the mock source, lists only 02:30 IST occurrences, a missed badge and other calls", async () => {
+    drawer.open("job:scheduler:pyNightlyExport");
+    await drawer.settled();
+    const rows = [...aside().querySelectorAll('[data-table="runs"] tbody tr')];
+    expect(rows.length).toBeGreaterThan(20);
+    for (const r of rows) expect(r.querySelector("td")?.textContent).toMatch(/, 2:30:00 am$/);
+    expect(rows.some((r) => r.querySelector('[data-result="missed"]')?.textContent === "missed")).toBe(true);
+    expect(aside().querySelector('[data-cell="other-calls"]')?.textContent).toMatch(/^\d+ \(\d+ failed\)$/);
   });
 });
 

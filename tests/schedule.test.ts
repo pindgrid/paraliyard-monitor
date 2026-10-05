@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { istDayStart, nextRunAt } from "../src/schedule";
+import { RUN_WINDOW_MS, istDayStart, nextRunAt, occurrencesBetween } from "../src/schedule";
 import { JOB_SCHEDULES } from "../src/services";
 
 // Epoch ms of a wall-clock time in IST (UTC+05:30).
@@ -53,6 +53,28 @@ describe("nextRunAt", () => {
     for (const cron of ["*/5 * * * *", "0 3 * * 1-5", "0 3 1 * *", "60 1 * * *", "0 24 * * *", "0 3 * * 7", ""]) {
       expect(() => nextRunAt(cron, ist(10, 5, 0, 0)), cron).toThrow(/unsupported cron/);
     }
+  });
+});
+
+describe("occurrencesBetween (port of functions/src/schedule.js)", () => {
+  it("daily over 30 days is every 02:30 IST (21:00 UTC)", () => {
+    const to = ist(10, 6, 12, 0);
+    const list = occurrencesBetween(DAILY, to - 30 * 86400000, to);
+    expect([30, 31]).toContain(list.length);
+    for (const s of list) expect(new Date(s).toISOString().slice(11)).toBe("21:00:00.000Z");
+    expect(list[list.length - 1]).toBe(ist(10, 6, 2, 30));
+  });
+
+  it("weekly over 14 days is only Sundays at 03:00 IST", () => {
+    const to = ist(10, 6, 12, 0);
+    expect(occurrencesBetween(WEEKLY, to - 14 * 86400000, to)).toEqual([ist(9, 27, 3, 0), ist(10, 4, 3, 0)]);
+  });
+
+  it("includes both bounds and throws on unsupported crons", () => {
+    expect(occurrencesBetween(DAILY, ist(10, 4, 2, 30), ist(10, 5, 2, 30))).toEqual([ist(10, 4, 2, 30), ist(10, 5, 2, 30)]);
+    expect(occurrencesBetween(DAILY, ist(10, 4, 2, 31), ist(10, 5, 2, 29))).toEqual([]);
+    expect(() => occurrencesBetween("*/5 * * * *", 0, 1)).toThrow(/unsupported cron/);
+    expect(RUN_WINDOW_MS).toBe(30 * 60000);
   });
 });
 

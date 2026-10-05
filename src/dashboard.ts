@@ -279,7 +279,9 @@ function lastRun(s: ServiceMetrics): string {
       ? '<span class="badge">success</span>'
       : result === "failed"
         ? '<span class="badge fail">failed</span>'
-        : '<span class="badge none">unknown</span>';
+        : result === "missed"
+          ? '<span class="badge fail">missed</span>'
+          : '<span class="badge none">unknown</span>';
   return `around ${esc(istDateTime(at))}${badge}`;
 }
 
@@ -287,7 +289,7 @@ function jobRow(s: ServiceMetrics, status: DashboardStatus): string {
   const at = jobNextRun(s, status.nowMs);
   const schedule = s.schedule ?? JOB_SCHEDULES[s.id]?.schedule ?? "";
   const squares = daySquares(status.runs?.[s.id] ?? null, status.nowMs)
-    .map((d) => `<i class="${d.state === "ok" ? "ok" : d.state === "failed" ? "fail" : ""}" data-day="${d.state}" title="${esc(d.label)}"></i>`)
+    .map((d) => `<i class="${d.state === "ok" ? "ok" : d.state === "failed" || d.state === "missed" ? "fail" : ""}" data-day="${d.state}" title="${esc(d.label)}"></i>`)
     .join("");
   return `
 <div class="plain job" data-open="job:${esc(s.id)}" data-job-id="${esc(s.id)}" ${OPENER_ATTRS} aria-label="Open run history for ${esc(s.name)}">

@@ -3,8 +3,9 @@ import { COLORS, groupFor, liveValue, type DrawerGroup } from "./drawer-groups";
 import { DASH, escapeHtml as esc, fmt, istDateTime, istTick } from "./fmt";
 import type { HistorySource } from "./history-source";
 import { rangeSeconds } from "./routes";
-import { computeStats, csvText, runsCsvText, type RunRow } from "./stats";
-import type { HistoryPoint, HistoryRange, MetricsResponse } from "./types";
+import { RUN_WINDOW_MS } from "./schedule";
+import { computeStats, csvText, runResult, runsCsvText, type RunRow } from "./stats";
+import type { HistoryPoint, HistoryRange, HistoryResponse, MetricsResponse, OtherCalls } from "./types";
 
 // The right-hand history drawer: a modal dialog with a scrim, range buttons,
 // one bundled Chart.js chart whose legend also mutes rows of the stats table,
@@ -50,6 +51,39 @@ function color(variable: string): string {
 
 function toXY(points: readonly HistoryPoint[]): XYPoint[] {
   return points.map((p) => ({ x: Date.parse(p.t), y: p.v })).filter((p) => Number.isFinite(p.x));
+}
+
+// Scheduler duration buckets are 5 minutes: (t - 300 s, t].
+const DURATION_BUCKET_MS = 300000;
+
+// Closed scheduled occurrences, oldest first. Upcoming runs are left out.
+// Points without a result (older answers) count as runs when v > 0.
+function runRowsOf(runs: readonly HistoryPoint[], durations: readonly HistoryPoint[]): RunRow[] {
+  const buckets = durations.map((p) => ({ t: Date.parse(p.t), v: p.v })).filter((p) => Number.isFinite(p.t));
+  // Max duration over the buckets that overlap [s, s + 30 min].
+  const durationFor = (s: number) => {
+    const values = buckets.filter((b) => b.t > s && b.t - DURATION_BUCKET_MS < s + RUN_WINDOW_MS).map((b) => b.v);
+    return values.length ? Math.max(...values) : null;
+  };
+  const rows: RunRow[] = [];
+  for (const p of runs) {
+    const t = Date.parse(p.t);
+    if (!Number.isFinite(t) || p.result === "upcoming") continue;
+    const result = p.result ?? (p.v > 0 ? ((p.failed ?? 0) > 0 ? "failed" : "success") : null);
+    if (result === null) continue;
+    rows.push({ t, failed: result !== "success", result, durationSec: result === "missed" ? null : durationFor(t) });
+  }
+  return rows.sort((a, b) => a.t - b.t);
+}
+
+function otherCallsText(other: OtherCalls | null): string {
+  if (!other) return DASH;
+  return `${other.count.toLocaleString("en-IN")} (${other.failed.toLocaleString("en-IN")} failed)`;
+}
+
+function runBadge(r: RunRow): string {
+  const result = runResult(r);
+  return `<span class="badge${result === "success" ? "" : " fail"}" data-result="${result}" style="margin:0">${result}</span>`;
 }
 
 // Opens the drawer for clicks and Enter / Space on any [data-open] element in root.
@@ -190,14 +224,9 @@ export function createDrawer({ doc, host, source, createChart = createDrawerChar
       (rangeSeconds(r) <= LIVE_APPEND_MAX_SECONDS ? " New points are added live." : "");
   }
 
-  function buildRuns(g: DrawerGroup, results: (HistoryPoint[] | null)[]) {
+  function buildRuns(g: DrawerGroup, results: (HistoryPoint[] | null)[], otherCalls: OtherCalls | null) {
     const [runs, durations] = results;
-    const durationAt = new Map((durations ?? []).map((p) => [p.t, p.v]));
-    runRows = (runs ?? [])
-      .filter((p) => p.v > 0)
-      .map((p) => ({ t: Date.parse(p.t), failed: (p.failed ?? 0) > 0, durationSec: durationAt.get(p.t) ?? null }))
-      .filter((r) => Number.isFinite(r.t))
-      .sort((a, b) => a.t - b.t);
+    runRows = runRowsOf(runs ?? [], durations ?? []);
     data = [];
     message(runs === null ? "Couldn't load run history. Try again in a minute." : runRows.length ? "" : "No runs recorded in this range.");
     chart = createChart(part<HTMLCanvasElement>("canvas"), {
@@ -216,24 +245,23 @@ export function createDrawer({ doc, host, source, createChart = createDrawerChar
         },
       ],
     });
+    // Runs and the success rate cover closed scheduled occurrences only; other calls are apart.
     const ok = runRows.filter((r) => !r.failed).length;
     const durs = runRows.map((r) => r.durationSec).filter((d): d is number => d !== null);
     const lastFail = [...runRows].reverse().find((r) => r.failed);
     const latest = [...runRows].reverse().slice(0, 30);
     part("stats").innerHTML = `
-<table class="dstats" data-table="summary"><thead><tr><th>Runs</th><th>Succeeded</th><th>Success rate</th><th>Avg duration</th><th>Last failure</th></tr></thead>
+<table class="dstats" data-table="summary"><thead><tr><th>Runs</th><th>Succeeded</th><th>Success rate</th><th>Avg duration</th><th>Last failure</th><th>Other calls</th></tr></thead>
 <tbody><tr><td>${runRows.length}</td><td>${ok}</td><td>${runRows.length ? `${Math.round((ok / runRows.length) * 100)}%` : DASH}</td>
-<td>${durs.length ? fmt.seconds(durs.reduce((a, b) => a + b, 0) / durs.length) : DASH}</td><td>${lastFail ? `around ${esc(istDateTime(lastFail.t))}` : "None"}</td></tr></tbody></table>
+<td>${durs.length ? fmt.seconds(durs.reduce((a, b) => a + b, 0) / durs.length) : DASH}</td><td>${lastFail ? `${esc(istDateTime(lastFail.t))} (${runResult(lastFail)})` : "None"}</td>
+<td data-cell="other-calls">${otherCallsText(otherCalls)}</td></tr></tbody></table>
 <table class="dstats" data-table="runs" style="margin-top:14px"><thead><tr><th>Run time</th><th>Result</th><th>Duration</th></tr></thead><tbody>
 ${latest
-  .map(
-    (r) =>
-      `<tr><td>around ${esc(istDateTime(r.t))}</td><td><span class="badge${r.failed ? " fail" : ""}" style="margin:0">${r.failed ? "failed" : "success"}</span></td><td>${fmt.seconds(r.durationSec)}</td></tr>`,
-  )
+  .map((r) => `<tr><td>around ${esc(istDateTime(r.t))}</td><td>${runBadge(r)}</td><td>${fmt.seconds(r.durationSec)}</td></tr>`)
   .join("")}
 </tbody></table>`;
     part("foot").textContent =
-      "Runs are read from the job function's requests in time buckets, so run times are approximate. Bar colour shows the result." +
+      "Each run is one scheduled time; the job function's requests in the 30 minutes after it count as that run, and a run without any is missed. Other calls are requests outside those windows. Bar colour shows the result." +
       (runRows.length > 30 ? " The table lists the latest 30 runs; the CSV has all of them." : "");
   }
 
@@ -249,13 +277,14 @@ ${latest
     pending = Promise.all(
       g.series.map((s) =>
         source.load(s.service, s.metric, r).then(
-          (res) => res.points,
+          (res): HistoryResponse | null => res,
           () => null,
         ),
       ),
-    ).then((results) => {
+    ).then((responses) => {
       if (mine !== token || !open) return;
-      if (g.type === "runs") buildRuns(g, results);
+      const results = responses.map((res) => res?.points ?? null);
+      if (g.type === "runs") buildRuns(g, results, responses[0]?.otherCalls ?? null);
       else buildLine(g, r, results);
     });
     return pending;

@@ -6,6 +6,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { SERVICES, GEN1_MEMORY_BYTES } = require("../src/constants");
 const { buildPayload, METRIC_KEYS, TREND_KEYS, totalFor } = require("../src/aggregate");
+const liveLog = require("./fixtures/scheduler-live-log");
 
 const NOW = Date.UTC(2026, 0, 1, 12, 0, 0);
 const MINUTE = 60000;
@@ -161,39 +162,73 @@ const NIGHTLY = { service_name: "pynightlyexport" };
 const WEEKLY = { service_name: "pyweeklyaccounts" };
 const FIVE_MINUTES = 300000;
 
-test("scheduler last run and result from request_count classes", () => {
+// NOW is Thursday 2026-01-01 17:30 IST. The latest closed occurrences are
+// 2026-01-01 02:30 IST (nightly) and Sunday 2025-12-28 03:00 IST (weekly).
+const NIGHTLY_LAST = Date.UTC(2025, 11, 31, 21, 0);
+const WEEKLY_LAST = Date.UTC(2025, 11, 27, 21, 30);
+
+// One series with points at the given [endMs, value] pairs.
+function pointsAt(resourceLabels, cls, pairs) {
+  return {
+    resource: { labels: resourceLabels },
+    metric: { labels: { response_code_class: cls } },
+    points: pairs.map(([t, v]) => ({ interval: { endTime: { seconds: String(t / 1000), nanos: 0 } }, value: { int64Value: String(v) } })),
+  };
+}
+
+test("scheduler last run is the latest closed occurrence; off-schedule calls do not count", () => {
   const results = {
     "scheduler.runs": ok(
-      series(NIGHTLY, [0, 0, 1], { response_code_class: "2xx" }, FIVE_MINUTES),
+      pointsAt(NIGHTLY, "2xx", [[NIGHTLY_LAST + FIVE_MINUTES, 1]]),
+      // Newer non-2xx calls outside every run window.
       series(NIGHTLY, [0, 0, 1], { response_code_class: "5xx" }, FIVE_MINUTES),
-      series(WEEKLY, [0, 0, 0, 2], { response_code_class: "2xx" }, FIVE_MINUTES),
-      series(WEEKLY, [0, 0, 0, 0], { response_code_class: "4xx" }, FIVE_MINUTES),
+      pointsAt(WEEKLY, "2xx", [[WEEKLY_LAST + FIVE_MINUTES, 2]]),
+      pointsAt(WEEKLY, "4xx", [[WEEKLY_LAST + 2 * FIVE_MINUTES, 1]]),
     ),
   };
   const payload = buildPayload({ results, windowKey: "1h", nowMs: NOW });
   const n = find(payload, "scheduler:pyNightlyExport").metrics;
-  assert.equal(n.lastRunAt, new Date(NOW - 2 * FIVE_MINUTES).toISOString());
-  assert.equal(n.lastResult, "failed");
+  assert.equal(n.lastRunAt, new Date(NIGHTLY_LAST).toISOString());
+  assert.equal(n.lastResult, "success");
   const w = find(payload, "scheduler:pyWeeklyAccounts").metrics;
-  assert.equal(w.lastRunAt, new Date(NOW - 3 * FIVE_MINUTES).toISOString());
-  assert.equal(w.lastResult, "success");
+  assert.equal(w.lastRunAt, new Date(WEEKLY_LAST).toISOString());
+  assert.equal(w.lastResult, "failed");
   assert.equal(payload.totals.scheduler.lastRunAt, n.lastRunAt);
   assert.equal(payload.totals.scheduler.lastResult, "failed");
 });
 
-test("scheduler with no requests in a successful query is a distinct no-run value", () => {
+test("scheduler with no requests in 8 days of closed windows is missed", () => {
   const results = { "scheduler.runs": ok(series(NIGHTLY, [0, 0], { response_code_class: "2xx" }, FIVE_MINUTES)) };
   const payload = buildPayload({ results, windowKey: "1h", nowMs: NOW });
   // Only zero values.
   const n = find(payload, "scheduler:pyNightlyExport").metrics;
-  assert.equal(n.lastRunAt, null);
-  assert.equal(n.lastResult, "none");
+  assert.equal(n.lastRunAt, new Date(NIGHTLY_LAST).toISOString());
+  assert.equal(n.lastResult, "missed");
   // No series at all.
   const w = find(payload, "scheduler:pyWeeklyAccounts").metrics;
-  assert.equal(w.lastRunAt, null);
-  assert.equal(w.lastResult, "none");
-  assert.equal(payload.totals.scheduler.lastRunAt, null);
-  assert.equal(payload.totals.scheduler.lastResult, "none");
+  assert.equal(w.lastRunAt, new Date(WEEKLY_LAST).toISOString());
+  assert.equal(w.lastResult, "missed");
+  assert.equal(payload.totals.scheduler.lastRunAt, n.lastRunAt);
+  assert.equal(payload.totals.scheduler.lastResult, "missed");
+  // An off-schedule 2xx call does not make a run.
+  const other = { "scheduler.runs": ok(series(NIGHTLY, [3], { response_code_class: "2xx" }, FIVE_MINUTES)) };
+  assert.equal(find(buildPayload({ results: other, windowKey: "1h", nowMs: NOW }), "scheduler:pyNightlyExport").metrics.lastResult, "missed");
+});
+
+test("scheduler live log: lastRunAt is the scheduled time and off-schedule non-2xx calls are ignored", () => {
+  const extra = liveLog.classSeries("pynightlyexport", "5xx", [liveLog.point(liveLog.ist(10, 5, 18, 22), 4)]);
+  const results = { "scheduler.runs": ok(...liveLog.nightlySeries(), extra, ...liveLog.weeklySeries()) };
+  const payload = buildPayload({ results, windowKey: "1h", nowMs: liveLog.NOW_MS });
+  assert.deepEqual(find(payload, "scheduler:pyNightlyExport").metrics, {
+    lastRunAt: new Date(liveLog.ist(10, 5, 2, 30)).toISOString(),
+    lastResult: "success",
+  });
+  assert.deepEqual(find(payload, "scheduler:pyWeeklyAccounts").metrics, {
+    lastRunAt: new Date(liveLog.ist(10, 4, 3, 0)).toISOString(),
+    lastResult: "success",
+  });
+  assert.equal(payload.totals.scheduler.lastResult, "success");
+  assert.equal(payload.totals.scheduler.lastRunAt, new Date(liveLog.ist(10, 5, 2, 30)).toISOString());
 });
 
 test("failed scheduler query keeps run and result null", () => {
@@ -204,14 +239,21 @@ test("failed scheduler query keeps run and result null", () => {
   assert.deepEqual(payload.totals.scheduler, { lastRunAt: null, lastResult: null });
 });
 
-test("scheduler totals: failed over success over none", () => {
-  const results = { "scheduler.runs": ok(series(WEEKLY, [0, 1], { response_code_class: "2xx" }, FIVE_MINUTES)) };
+test("scheduler totals: failed over missed over success over none", () => {
+  const results = {
+    "scheduler.runs": ok(
+      pointsAt(NIGHTLY, "2xx", [[NIGHTLY_LAST + FIVE_MINUTES, 1]]),
+      pointsAt(WEEKLY, "2xx", [[WEEKLY_LAST + FIVE_MINUTES, 1]]),
+    ),
+  };
   const totals = buildPayload({ results, windowKey: "1h", nowMs: NOW }).totals.scheduler;
   assert.equal(totals.lastResult, "success");
-  assert.equal(totals.lastRunAt, new Date(NOW - FIVE_MINUTES).toISOString());
+  assert.equal(totals.lastRunAt, new Date(NIGHTLY_LAST).toISOString());
   assert.equal(totalFor("lastResult", ["none", "none"]), "none");
   assert.equal(totalFor("lastResult", ["none", "success"]), "success");
   assert.equal(totalFor("lastResult", ["success", "none", "failed"]), "failed");
+  assert.equal(totalFor("lastResult", ["success", "missed", "none"]), "missed");
+  assert.equal(totalFor("lastResult", ["missed", "failed"]), "failed");
   assert.equal(totalFor("lastResult", [null, null]), null);
 });
 

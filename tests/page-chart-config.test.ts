@@ -7,6 +7,7 @@ import {
   heroConfig,
   heroTick,
   heroTooltipTitle,
+  hostBytesTick,
   hostConfig,
   hostLabel,
   INK,
@@ -124,9 +125,33 @@ describe("hosting config", () => {
     expect(scales.x.stacked).toBe(true);
     expect(scales.y.stacked).toBe(true);
     expect(scales.x.ticks).toMatchObject({ maxTicksLimit: 6 });
-    const yTicks = scales.y.ticks as { callback: (v: number) => string };
-    expect(yTicks.callback).toBe(bytesTick);
+    // The y ticks format like bytesTick, without repeated labels.
+    const yTicks = scales.y.ticks as { callback: (v: number, i: number, ticks: { value: number }[]) => string | null };
+    expect(yTicks.callback).toBe(hostBytesTick);
+    expect(yTicks.callback(1000, 0, [{ value: 1000 }])).toBe(bytesTick(1000));
     expect(bytesTick(1000)).toBe("1.0 kB");
+  });
+
+  it("all-zero data still gets a 0..1 kB y axis with no duplicate tick labels", () => {
+    const zero = sites().map((s) => ({
+      ...s,
+      recent: { ...s.recent!, series: { bytesServed: new Array(30).fill(0) } },
+    }));
+    const cfg = hostConfig(zero, T);
+    expect(cfg.data.datasets.every((d) => d.data.every((v) => v === 0))).toBe(true);
+    const y = (cfg.options!.scales! as Record<string, Record<string, unknown>>).y;
+    expect(y.suggestedMax as number).toBeGreaterThanOrEqual(1000);
+    expect(y.beginAtZero).toBe(true);
+    const callback = (y.ticks as { callback: (v: number, i: number, ticks: { value: number }[]) => string | null }).callback;
+    // The ticks Chart.js would generate for a 0..1 kB axis and for a 0..1 B axis.
+    for (const [max, step] of [
+      [1000, 200],
+      [1, 0.2],
+    ]) {
+      const ticks = Array.from({ length: Math.round(max / step) + 1 }, (_, i) => ({ value: Number((i * step).toFixed(6)) }));
+      const labels = ticks.map((t, i) => callback(t.value, i, ticks)).filter((l): l is string => l !== null);
+      expect(new Set(labels).size, `0..${max}`).toBe(labels.length);
+    }
   });
 
   it("hides the legend and labels tooltips in bytes per minute", () => {

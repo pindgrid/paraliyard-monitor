@@ -36,4 +36,16 @@ function nextRunAt(cron, nowMs) {
   return candidate - IST_OFFSET_MS;
 }
 
-module.exports = { IST_OFFSET_MS, nextRunAt, parseCron };
+// A run is one scheduled occurrence: requests in [s, s + RUN_WINDOW_MS) belong to it.
+const RUN_WINDOW_MS = 30 * MINUTE_MS;
+
+// Epoch ms of every scheduled time s with fromMs <= s <= toMs, ascending.
+function occurrencesBetween(cron, fromMs, toMs) {
+  const { weekday } = parseCron(cron);
+  const step = weekday === null ? DAY_MS : 7 * DAY_MS;
+  const out = [];
+  for (let s = nextRunAt(cron, fromMs - 1); s <= toMs; s += step) out.push(s);
+  return out;
+}
+
+module.exports = { IST_OFFSET_MS, RUN_WINDOW_MS, nextRunAt, occurrencesBetween, parseCron };

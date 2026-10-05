@@ -3,7 +3,7 @@
 // call the builders and named callbacks directly. Values follow the design
 // reference (themeDefaults, tooltipStyle, makeHero, makeHost, updateHost).
 import type { ChartConfiguration, TooltipItem } from "chart.js";
-import { fmt, istTick, istShortTime, istTime } from "./fmt";
+import { BYTE_AXIS_MIN, fmt, istTick, istShortTime, istTime, uniqueTicks } from "./fmt";
 import { recentSeries } from "./recent";
 import type { ServiceMetrics } from "./types";
 
@@ -86,6 +86,9 @@ export function rateLabel(item: TooltipItem<"line">): string {
 export function bytesTick(value: number | string): string {
   return fmt.bytes(Number(value));
 }
+
+// Hosting y ticks without repeated labels.
+export const hostBytesTick = uniqueTicks(fmt.bytes);
 
 // " paraliyard: 2.0 kB/min".
 export function hostLabel(item: TooltipItem<"bar">): string {
@@ -211,7 +214,13 @@ export function hostConfig(sites: readonly ServiceMetrics[], generatedAtMs: numb
       animation: false,
       scales: {
         x: { stacked: true, grid: { display: false }, ticks: { maxTicksLimit: 6, autoSkip: true, maxRotation: 0 } },
-        y: { stacked: true, beginAtZero: true, grid: { color: RULE }, ticks: { callback: bytesTick, maxTicksLimit: 4 } },
+        y: {
+          stacked: true,
+          beginAtZero: true,
+          suggestedMax: BYTE_AXIS_MIN,
+          grid: { color: RULE },
+          ticks: { callback: hostBytesTick, maxTicksLimit: 4 },
+        },
       },
       plugins: {
         legend: { display: false },

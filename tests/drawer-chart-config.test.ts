@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ChartEvent, LegendElement, LegendItem, TooltipItem } from "chart.js";
 import { drawerConfig, type DrawerChartSpec } from "../src/drawer-chart";
+import { groupFor } from "../src/drawer-groups";
 import { fmt, istDateTime, istTick } from "../src/fmt";
 
 // The real adapter's pure config (tests/setup.ts mocks the module elsewhere).
@@ -98,6 +99,53 @@ describe("drawerConfig", () => {
     expect(opts.plugins.tooltip.callbacks.label(item)).toBe(" Reads/min: 51.64");
     // 1h range: short 12-hour ticks.
     expect(opts.scales.x.ticks.callback(T)).toBe("2:35 am");
+  });
+
+  it("every drawer byte axis spans at least 1 kB and never repeats a tick label", () => {
+    type Scale = { beginAtZero: boolean; suggestedMax?: number; ticks: { callback: (v: number, i: number, ticks: { value: number }[]) => string | null } };
+    const cases: [string, "y" | "y1"][] = [
+      ["host", "y"],
+      ["site:hosting:paraliyard", "y"],
+      ["sum:bytes", "y"],
+      ["st:bucket:mineral-proton-438104-g8-paraliyard", "y"],
+      ["fn:function1:pyCleanupOnAuthDelete", "y1"],
+    ];
+    for (const [opener, axis] of cases) {
+      const group = groupFor(opener)!;
+      // All-zero data on every series of the group.
+      const spec: DrawerChartSpec = {
+        kind: "line",
+        from: T - HOUR,
+        to: T,
+        formatX: istDateTime,
+        axes: group.axes,
+        formats: group.series.map((s) => s.format),
+        datasets: group.series.map((s) => ({ label: s.label, color: "#B07A12", axis: s.axis, data: [{ x: T, y: 0 }] })),
+      };
+      const scale = (drawerConfig(spec).options as unknown as { scales: Record<string, Scale> }).scales[axis];
+      expect(scale.suggestedMax, opener).toBeGreaterThanOrEqual(1000);
+      for (const [max, step] of [
+        [1000, 200],
+        [1, 0.2],
+      ]) {
+        const ticks = Array.from({ length: Math.round(max / step) + 1 }, (_, i) => ({ value: Number((i * step).toFixed(6)) }));
+        const labels = ticks.map((t, i) => scale.ticks.callback(t.value, i, ticks)).filter((l): l is string => l !== null);
+        expect(new Set(labels).size, `${opener} 0..${max}`).toBe(labels.length);
+      }
+    }
+    // Bytes stored is a level: it still does not start at zero.
+    for (const opener of ["sum:bytes", "st:bucket:mineral-proton-438104-g8-paraliyard"]) {
+      const group = groupFor(opener)!;
+      const spec: DrawerChartSpec = { kind: "line", from: T - HOUR, to: T, formatX: istDateTime, axes: group.axes, formats: [], datasets: [] };
+      expect((drawerConfig(spec).options as unknown as { scales: Record<string, Scale> }).scales.y.beginAtZero, opener).toBe(false);
+    }
+  });
+
+  it("non-byte axes keep their labels and have no minimum scale", () => {
+    const opts = drawerConfig(lineSpec()).options as unknown as { scales: Record<string, { suggestedMax?: number; ticks: { callback: (v: number, i: number, t: { value: number }[]) => string | null } }> };
+    const ticks = [{ value: 0 }, { value: 10 }, { value: 20 }];
+    expect(ticks.map((t, i) => opts.scales.y.ticks.callback(t.value, i, ticks))).toEqual(["0.00", "10.00", "20.00"]);
+    expect(opts.scales.y.suggestedMax).toBeUndefined();
   });
 
   it("run bars have no legend", () => {

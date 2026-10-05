@@ -1,6 +1,13 @@
 "use strict";
 
-const { PROJECT_NAME, PAGE_SIZE, RESOURCES, SERVICES, METRIC_TYPES } = require("./constants");
+const {
+  PROJECT_NAME,
+  PAGE_SIZE,
+  RESOURCES,
+  SERVICES,
+  METRIC_TYPES,
+  SCHEDULER_ALIGNMENT_SECONDS,
+} = require("./constants");
 const { QUERY_DEFS, buildFilter, buildServiceFilter } = require("./queries");
 const { trendOf } = require("./aggregate");
 
@@ -34,11 +41,18 @@ const ERROR_CLASSES_CLAUSE = 'metric.labels.response_code_class = one_of("4xx", 
 
 // splitLabel: the series are also grouped by this metric label, so each point
 // can carry the non-2xx part as `failed` next to the total `v`.
-function spec(queryKey, factor, perMinute, unit, metricFilter, splitLabel) {
+// alignmentSeconds: a fixed alignment that overrides the range alignment.
+function spec(queryKey, factor, perMinute, unit, metricFilter, splitLabel, alignmentSeconds) {
   const out = { queryKey, factor, perMinute, unit };
   if (metricFilter) out.metricFilter = metricFilter;
   if (splitLabel) out.splitLabel = splitLabel;
+  if (alignmentSeconds) out.alignmentSeconds = alignmentSeconds;
   return Object.freeze(out);
+}
+
+// Alignment for one (metric spec, range): the spec override, else the range's.
+function alignmentOf(metricSpec, range) {
+  return metricSpec.alignmentSeconds || HISTORY_RANGES[range].alignmentSeconds;
 }
 
 const RESPONSE_CODE_CLASS = "response_code_class";
@@ -72,10 +86,13 @@ const HISTORY_METRICS = Object.freeze({
   hosting: Object.freeze({
     bytesServed: spec("hosting.sentBytes", 1, false, "bytes per bucket"),
   }),
+  // Scheduler history is read in 5-minute buckets at every range so each run
+  // window (30 min after the scheduled time) is resolved exactly.
   scheduler: Object.freeze({
-    runs: spec("scheduler.runs", 1, false, "runs per bucket", undefined, RESPONSE_CODE_CLASS),
+    // One point per scheduled occurrence (see runs.js).
+    runs: spec("scheduler.runs", 1, false, "runs", undefined, RESPONSE_CODE_CLASS, SCHEDULER_ALIGNMENT_SECONDS),
     // p99 request latency of the job function, ms to s.
-    durationSec: spec("run.latency", 0.001, false, "seconds"),
+    durationSec: spec("run.latency", 0.001, false, "seconds", undefined, undefined, SCHEDULER_ALIGNMENT_SECONDS),
   }),
 });
 
@@ -128,7 +145,8 @@ function timestamp(ms) {
 // covers the kind's fixed services and sums them into one series.
 function buildHistoryRequest(service, metric, range, nowMs) {
   const metricSpec = HISTORY_METRICS[service.kind][metric];
-  const { seconds, alignmentSeconds } = HISTORY_RANGES[range];
+  const { seconds } = HISTORY_RANGES[range];
+  const alignmentSeconds = alignmentOf(metricSpec, range);
   const def = HISTORY_DEFS.find((d) => d.key === metricSpec.queryKey);
   const extra = metricSpec.metricFilter ? [metricSpec.metricFilter] : [];
   let filter;
@@ -174,7 +192,7 @@ function metricSpecOf(metric) {
 function toHistoryPoints(series, metric, range) {
   const metricSpec = metricSpecOf(metric);
   if (!metricSpec || !has(HISTORY_RANGES, range) || !Array.isArray(series)) return [];
-  const divisor = metricSpec.perMinute ? HISTORY_RANGES[range].alignmentSeconds / 60 : 1;
+  const divisor = metricSpec.perMinute ? alignmentOf(metricSpec, range) / 60 : 1;
   const scale = (v) => (v * metricSpec.factor) / divisor;
   const points = trendOf([series]);
   if (!metricSpec.splitLabel) return points.map((p) => ({ t: p.t, v: scale(p.v) }));
@@ -192,6 +210,7 @@ module.exports = {
   HISTORY_METRICS,
   HISTORY_ONLY_DEFS,
   AGGREGATES,
+  alignmentOf,
   validateHistoryQuery,
   buildHistoryRequest,
   toHistoryPoints,

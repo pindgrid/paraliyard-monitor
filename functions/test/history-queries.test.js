@@ -200,7 +200,8 @@ test("units", () => {
   assert.equal(HISTORY_METRICS.function2.cpuPct.unit, "%");
   assert.equal(HISTORY_METRICS.firestore.readsPerMin.unit, "per minute");
   assert.equal(HISTORY_METRICS.hosting.bytesServed.unit, "bytes per bucket");
-  assert.equal(HISTORY_METRICS.scheduler.runs.unit, "runs per bucket");
+  // One point per scheduled occurrence, no longer per bucket.
+  assert.equal(HISTORY_METRICS.scheduler.runs.unit, "runs");
   assert.equal(HISTORY_METRICS.bucket.bytesStored.unit, "bytes");
   assert.ok(!("cpuPct" in HISTORY_METRICS.function1));
   assert.ok(!("memPct" in HISTORY_METRICS.function1));
@@ -317,6 +318,25 @@ test("scheduler durationSec reads request_latencies p99 per job function", () =>
     { t: new Date(NOW - 3600000).toISOString(), v: 0.5 },
     { t: new Date(NOW).toISOString(), v: 1.5 },
   ]);
+});
+
+test("scheduler runs and durationSec use 300 s alignment at every range", () => {
+  for (const id of ["scheduler:pyNightlyExport", "scheduler:pyWeeklyAccounts"]) {
+    for (const metric of ["runs", "durationSec"]) {
+      for (const range of ["7d", "30d", "6w", ...Object.keys(HISTORY_RANGES)]) {
+        const request = buildHistoryRequest(byId(id), metric, range, NOW);
+        assert.equal(request.aggregation.alignmentPeriod.seconds, 300, `${id} ${metric} ${range}`);
+        // The interval still follows the range.
+        assert.equal(NOW / 1000 - request.interval.startTime.seconds, HISTORY_RANGES[range].seconds);
+        assert.equal(request.pageSize, 1000);
+      }
+    }
+  }
+  // Other kinds keep the range alignment.
+  for (const range of Object.keys(HISTORY_RANGES)) {
+    const request = buildHistoryRequest(byId("function2:pyNightlyExport"), "reqPerMin", range, NOW);
+    assert.equal(request.aggregation.alignmentPeriod.seconds, HISTORY_RANGES[range].alignmentSeconds, range);
+  }
 });
 
 test("/api/metrics never queries request_latencies and keeps 13 keys", () => {

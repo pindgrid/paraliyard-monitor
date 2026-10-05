@@ -49,11 +49,18 @@ export function csvText(series: readonly CsvSeries[]): string {
 
 export interface RunRow {
   t: number;
+  // True for a failed or missed run.
   failed: boolean;
   durationSec: number | null;
+  // success, failed or missed; without it failed decides.
+  result?: "success" | "failed" | "missed";
+}
+
+export function runResult(r: RunRow): "success" | "failed" | "missed" {
+  return r.result ?? (r.failed ? "failed" : "success");
 }
 
 export function runsCsvText(rows: readonly RunRow[]): string {
-  const lines = rows.map((r) => `${new Date(r.t).toISOString()},${r.failed ? "failed" : "success"},${r.durationSec ?? ""}`);
+  const lines = rows.map((r) => `${new Date(r.t).toISOString()},${runResult(r)},${r.durationSec ?? ""}`);
   return ["time,result,duration_s", ...lines].join("\n");
 }

@@ -104,6 +104,36 @@ describe("createMockHistorySource", () => {
     for (const metrics of Object.values(allowlist.metricsByKind)) {
       for (const metric of metrics) expect(HISTORY_UNITS[metric], metric).toBeTruthy();
     }
+    expect(HISTORY_UNITS.runs).toBe("runs");
+  });
+
+  it("returns scheduler runs as scheduled occurrences, deterministically, with failed, missed and other calls", async () => {
+    const a = await createMockHistorySource(() => NOW).load("scheduler:pyNightlyExport", "runs", "30d");
+    const b = await createMockHistorySource(() => NOW).load("scheduler:pyNightlyExport", "runs", "30d");
+    expect(a).toEqual(b);
+    expect(a.unit).toBe("runs");
+    // One point per 02:30 IST occurrence within the mock retention.
+    expect(a.points.length).toBeGreaterThanOrEqual(23);
+    for (const p of a.points) {
+      expect(new Date(p.t).toISOString().slice(11)).toBe("21:00:00.000Z");
+      expect(["success", "failed", "missed", "upcoming"]).toContain(p.result);
+      expect(p.v).toBe(p.requests);
+      expect(p.failed ?? 0).toBeLessThanOrEqual(p.requests ?? 0);
+    }
+    expect(a.points.some((p) => p.result === "failed" && (p.failed ?? 0) > 0)).toBe(true);
+    expect(a.points.some((p) => p.result === "missed" && p.requests === 0)).toBe(true);
+    expect(a.points.some((p) => p.result === "success")).toBe(true);
+    expect(a.otherCalls?.count).toBeGreaterThan(0);
+    expect(a.otherCalls?.failed).toBeGreaterThan(0);
+    // Other metrics carry no otherCalls.
+    expect("otherCalls" in (await createMockHistorySource(() => NOW).load("firestore:yard", "readsPerMin", "24h"))).toBe(false);
+  });
+
+  it("marks a run whose window is still open as upcoming", async () => {
+    // 5 Oct 2026, 2:40 am IST: ten minutes into the nightly window.
+    const at = Date.UTC(2026, 9, 4, 21, 10);
+    const { points } = await createMockHistorySource(() => at).load("scheduler:pyNightlyExport", "runs", "7d");
+    expect(points[points.length - 1]).toMatchObject({ t: "2026-10-04T21:00:00.000Z", result: "upcoming", v: 0, requests: 0, failed: 0 });
   });
 });
 
@@ -118,6 +148,56 @@ describe("createLiveHistorySource", () => {
     expect(init.headers).toEqual({ Accept: "application/json" });
     expect(init.signal).toBeInstanceOf(AbortSignal);
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("accepts the scheduler runs shape with per-run fields and otherCalls", async () => {
+    const runs = {
+      service: "scheduler:pyNightlyExport",
+      metric: "runs",
+      range: "30d",
+      unit: "runs",
+      points: [
+        { t: "2026-09-18T21:00:00.000Z", v: 0, result: "missed", requests: 0, failed: 0 },
+        { t: "2026-10-04T21:00:00.000Z", v: 1, result: "success", requests: 1, failed: 0 },
+        { t: "2026-10-05T21:00:00.000Z", v: 0, result: "upcoming", requests: 0, failed: 0 },
+      ],
+      generatedAt: "2026-10-05T21:10:00.000Z",
+      otherCalls: { count: 4, failed: 4 },
+    };
+    const fetchFn = vi.fn(async () => fakeResponse(runs));
+    const data = await createLiveHistorySource(fetchFn as unknown as typeof fetch).load("scheduler:pyNightlyExport", "runs", "30d");
+    expect(data).toEqual(runs);
+    expect(data.otherCalls).toEqual({ count: 4, failed: 4 });
+    expect(data.points.map((p) => p.result)).toEqual(["missed", "success", "upcoming"]);
+    // A stale answer keeps the same shape.
+    const stale = vi.fn(async () => fakeResponse({ ...runs, stale: true }));
+    expect((await createLiveHistorySource(stale as unknown as typeof fetch).load("scheduler:pyNightlyExport", "runs", "30d")).stale).toBe(true);
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a malformed otherCalls or run point", async () => {
+    const base = {
+      service: "scheduler:pyNightlyExport",
+      metric: "runs",
+      range: "30d",
+      unit: "runs",
+      points: [{ t: "2026-10-04T21:00:00.000Z", v: 1, result: "success", requests: 1, failed: 0 }],
+      generatedAt: "2026-10-05T21:10:00.000Z",
+      otherCalls: { count: 0, failed: 0 },
+    };
+    for (const body of [
+      { ...base, otherCalls: { count: "4", failed: 4 } },
+      { ...base, otherCalls: null },
+      { ...base, otherCalls: { count: 4 } },
+      { ...base, points: [{ ...base.points[0], result: "late" }] },
+      { ...base, points: [{ ...base.points[0], requests: "1" }] },
+      { ...base, points: [{ ...base.points[0], failed: null }] },
+    ]) {
+      const fetchFn = vi.fn(async () => fakeResponse(body));
+      await expect(
+        createLiveHistorySource(fetchFn as unknown as typeof fetch).load("scheduler:pyNightlyExport", "runs", "30d"),
+      ).rejects.toThrow(/unexpected shape/);
+    }
   });
 
   it("rejects non-200 responses", async () => {

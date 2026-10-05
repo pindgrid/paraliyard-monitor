@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import allowlist from "../src/history-allowlist.json";
-import { createLiveHistorySource, createMockHistorySource, HISTORY_UNITS } from "../src/history-source";
+import { createLiveHistorySource, createMockHistorySource, HISTORY_UNITS, MOCK_RETENTION_SECONDS } from "../src/history-source";
 import { ERROR_SERVICE, mockRecent } from "../src/mock/recent";
-import { HISTORY_RANGES } from "../src/routes";
-import { nextRunAt } from "../src/schedule";
+import { HISTORY_RANGES, rangeSeconds } from "../src/routes";
+import { nextRunAt, occurrencesBetween } from "../src/schedule";
 import { JOB_SCHEDULES, RECENT_KEYS, SERVICES } from "../src/services";
 import { createMockSource } from "../src/source";
 import type { HistoryRange } from "../src/types";
@@ -85,7 +85,12 @@ const AGGREGATES = allowlist.aggregates as Record<string, string[]>;
 function expectEmpty(service: string, metric: string, range: HistoryRange): boolean {
   if ((metric === "cpuPct" || metric === "memPct") && service === "function2:pyWeeklyAccounts") return true;
   if (metric === "bytesStored" && (range === "1h" || range === "6h")) return true;
-  // A job has a duration point only for buckets with a run.
+  // Runs have one point per scheduled occurrence in the range (within the mock retention).
+  if (metric === "runs") {
+    const from = Math.max(NOW - rangeSeconds(range) * 1000, NOW - MOCK_RETENTION_SECONDS * 1000);
+    return occurrencesBetween(JOB_SCHEDULES[service].cron, from, NOW).length === 0;
+  }
+  // A job has a duration point only for runs that happened.
   return metric === "durationSec" && !["7d", "30d", "6w"].includes(range);
 }
 
@@ -114,22 +119,33 @@ describe("createMockHistorySource", () => {
     expect(total.service).toBe("total:bucket");
   });
 
-  it("scheduler runs follow the cron, carry failed and match durations by time", async () => {
+  it("scheduler runs are one point per occurrence; durations sit in the windows of runs that happened", async () => {
     const source = createMockHistorySource(() => NOW);
     const runs = await source.load("scheduler:pyNightlyExport", "runs", "30d");
-    const active = runs.points.filter((p) => p.v > 0);
-    // 24 days of mock retention: one nightly run per day.
-    expect(active.length).toBeGreaterThanOrEqual(23);
+    // 24 days of mock retention: one nightly occurrence per day.
+    expect(runs.points.length).toBeGreaterThanOrEqual(23);
     expect(runs.points.every((p) => typeof p.failed === "number" && (p.failed ?? 0) <= p.v)).toBe(true);
-    expect(active.some((p) => (p.failed ?? 0) > 0)).toBe(true);
-    expect(active.some((p) => p.failed === 0)).toBe(true);
+    const happened = runs.points.filter((p) => p.result === "success" || p.result === "failed");
+    expect(happened.some((p) => (p.failed ?? 0) > 0)).toBe(true);
+    expect(happened.some((p) => p.failed === 0)).toBe(true);
+    expect(runs.points.some((p) => p.result === "missed")).toBe(true);
     const durations = await source.load("scheduler:pyNightlyExport", "durationSec", "30d");
-    expect(durations.points.map((p) => p.t)).toEqual(active.map((p) => p.t));
-    for (const p of durations.points) expect(p.v).toBeGreaterThanOrEqual(38);
+    expect(durations.points).toHaveLength(happened.length);
+    durations.points.forEach((p, i) => {
+      const s = Date.parse(happened[i].t);
+      const end = Date.parse(p.t);
+      // A 5-minute bucket (end - 300 s, end] that overlaps [s, s + 30 min].
+      expect(end % 300000).toBe(0);
+      expect(end).toBeGreaterThan(s);
+      expect(end - 300000).toBeLessThan(s + 30 * 60000);
+      expect(p.v).toBeGreaterThanOrEqual(38);
+    });
     const weekly = await source.load("scheduler:pyWeeklyAccounts", "runs", "6w");
-    for (const p of weekly.points.filter((q) => q.v > 0)) {
-      // 03:00 IST on a Sunday is 21:30 UTC on a Saturday; the 4 h bucket ends at 00:00 UTC.
-      expect(new Date(Date.parse(p.t) - 1).getUTCDay()).toBe(6);
+    expect(weekly.points.length).toBeGreaterThan(0);
+    for (const p of weekly.points) {
+      // 03:00 IST on a Sunday is 21:30 UTC on a Saturday.
+      expect(new Date(p.t).getUTCDay()).toBe(6);
+      expect(new Date(p.t).toISOString().slice(11)).toBe("21:30:00.000Z");
     }
   });
 

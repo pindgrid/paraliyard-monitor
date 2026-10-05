@@ -6,8 +6,11 @@ const {
   validateHistoryQuery,
   buildHistoryRequest,
   toHistoryPoints,
+  alignmentOf,
 } = require("./history");
 const { callOptions, isNotFound, failureLine } = require("./collect");
+const { JOB_SCHEDULES } = require("./constants");
+const { classifyRuns } = require("./runs");
 
 const NO_STORE = "no-store";
 // At most this many history calls per rolling window, per instance.
@@ -44,6 +47,27 @@ function createLimiter({ now, limit = RATE_LIMIT, windowMs = RATE_WINDOW_MS }) {
   };
 }
 
+// Scheduler runs: one point per scheduled occurrence in the range, plus the
+// requests outside every run window. Raw buckets never leave the backend.
+function runsAnswer(series, service, range, nowMs) {
+  const metricSpec = HISTORY_METRICS[service.kind].runs;
+  const { runs, otherCalls } = classifyRuns(
+    series,
+    JOB_SCHEDULES[service.id].cron,
+    nowMs - HISTORY_RANGES[range].seconds * 1000,
+    nowMs,
+    alignmentOf(metricSpec, range),
+  );
+  const points = runs.map((r) => ({
+    t: new Date(r.at).toISOString(),
+    v: r.requests,
+    result: r.result,
+    requests: r.requests,
+    failed: r.failed,
+  }));
+  return { points, otherCalls };
+}
+
 function sendError(res, status, error, headers = {}) {
   res.set("Cache-Control", NO_STORE);
   for (const [name, value] of Object.entries(headers)) res.set(name, value);
@@ -69,22 +93,36 @@ function createHistoryRoute({ getClient, now = Date.now, log = console, notFound
     const { service, metric, range } = query;
     const key = `history/${service.id}/${metric}/${range}`;
     const nowMs = now();
-    const answer = (points) => ({
-      service: service.id,
-      metric,
-      range,
-      unit: HISTORY_METRICS[service.kind][metric].unit,
-      points,
-      generatedAt: new Date(nowMs).toISOString(),
-    });
+    const isRuns = metric === "runs";
+    const answer = (series) => {
+      const out = {
+        service: service.id,
+        metric,
+        range,
+        unit: HISTORY_METRICS[service.kind][metric].unit,
+        points: [],
+        generatedAt: new Date(nowMs).toISOString(),
+      };
+      if (isRuns) {
+        const { points, otherCalls } = runsAnswer(series, service, range, nowMs);
+        out.points = points;
+        out.otherCalls = otherCalls;
+      } else {
+        out.points = toHistoryPoints(series, metric, range);
+      }
+      return out;
+    };
     try {
       const request = buildHistoryRequest(service, metric, range, nowMs);
       const response = await getClient().listTimeSeries(request, callOptions());
       const series = Array.isArray(response) ? response[0] : null;
       if (!Array.isArray(series)) throw new Error("unexpected listTimeSeries response");
-      entry.data = answer(toHistoryPoints(series, metric, range));
+      // A truncated page is reported, never followed: one call per miss.
+      const page = response[2];
+      if (page && page.nextPageToken) log.warn(`liveMonitorApi: key=${key} more than one page, extra pages not read`);
+      entry.data = answer(series);
       entry.stale = false;
-      if (entry.data.points.length === 0) logNoData(key);
+      if (series.length === 0 || entry.data.points.length === 0) logNoData(key);
     } catch (err) {
       if (isNotFound(err)) {
         entry.data = answer([]);
