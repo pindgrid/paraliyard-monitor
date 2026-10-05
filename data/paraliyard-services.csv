@@ -1,0 +1,18 @@
+Project,App,Area,Type,Name,Region,Config,30-day use,Unit,Status,Note
+mineral-proton-438104-g8,Parali Yard,Backend,Cloud Function (2nd gen),pyNightlyExport,asia-south1,1 vCPU · 256 MiB · max 40 · concurrency 40 · HTTP / scheduled,25.0,calls,in use,
+mineral-proton-438104-g8,Parali Yard,Backend,Cloud Function (2nd gen),pyReadStockistDocs,asia-south1,1 vCPU · 512 MiB · max 40 · concurrency 40 · Firestore trigger,59.0,calls,in use,
+mineral-proton-438104-g8,Parali Yard,Backend,Cloud Function (2nd gen),pyYardStaffOnWrite,asia-south1,1 vCPU · 512 MiB · max 40 · concurrency 40 · Firestore trigger,33.0,calls,in use,
+mineral-proton-438104-g8,Parali Yard,Backend,Cloud Function (2nd gen),pyMintOnCrewClaim,asia-south1,1 vCPU · 512 MiB · max 40 · concurrency 40 · Firestore trigger,136.0,calls,in use,
+mineral-proton-438104-g8,Parali Yard,Backend,Cloud Function (2nd gen),pyDeleteAccountOnRequest,asia-south1,1 vCPU · 512 MiB · max 40 · concurrency 40 · Firestore trigger,12.0,calls,in use,
+mineral-proton-438104-g8,Parali Yard,Backend,Cloud Function (2nd gen),pyStaffLoginOnRequest,asia-south1,1 vCPU · 512 MiB · max 40 · concurrency 40 · Firestore trigger,33.0,calls,in use,
+mineral-proton-438104-g8,Parali Yard,Backend,Cloud Function (2nd gen),pyWeeklyAccounts,asia-south1,1 vCPU · 256 MiB · max 40 · concurrency 40 · HTTP / scheduled,14.0,calls,in use,
+mineral-proton-438104-g8,Parali Yard,Backend,Cloud Function (2nd gen),pyPushOnNotification,asia-south1,1 vCPU · 512 MiB · max 40 · concurrency 40 · Firestore trigger,13.0,calls,in use,
+mineral-proton-438104-g8,Parali Yard,Backend,Cloud Function (2nd gen),pyMintOnRoleRequest,asia-south1,1 vCPU · 512 MiB · max 40 · concurrency 40 · Firestore trigger,18.0,calls,in use,
+mineral-proton-438104-g8,Parali Yard,Backend,Cloud Function (1st gen),pyCleanupOnAuthDelete,asia-south1,512 MB · Auth trigger,0,calls,in use,Fires only when an account is deleted
+mineral-proton-438104-g8,Parali Yard,Database,Firestore database,yard,asia-south1,PITR on · delete-protected,226453.0,doc reads + writes,in use,
+mineral-proton-438104-g8,Parali Yard,Storage,Storage bucket,mineral-proton-438104-g8-paraliyard,asia-south1,,0.04,GB stored,in use,
+mineral-proton-438104-g8,Parali Yard,Storage,Storage bucket,mineral-proton-438104-g8-yard-backups,asia-south1,,0.01,GB stored,in use,
+mineral-proton-438104-g8,Parali Yard,Web app,Firebase Hosting site,paraliyard,global CDN,https://paraliyard.web.app,504.4,MB served,in use,
+mineral-proton-438104-g8,Parali Yard,Web app,Firebase Hosting site,preparaliyard,global CDN,https://preparaliyard.web.app,0.0,MB served,check,Not in the Parali Yard repo's firebase.json; probably a pre-release site
+mineral-proton-438104-g8,Parali Yard,Scheduled job,Cloud Scheduler job,pyNightlyExport,asia-south1,30 2 * * * (Asia/Kolkata),,,in use,
+mineral-proton-438104-g8,Parali Yard,Scheduled job,Cloud Scheduler job,pyWeeklyAccounts,asia-south1,0 3 * * 0 (Asia/Kolkata),,,in use,
