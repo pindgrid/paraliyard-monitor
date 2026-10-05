@@ -3,17 +3,24 @@
 const { WINDOWS, GEN1_MEMORY_BYTES, KINDS, RESOURCES, SERVICES } = require("./constants");
 const { normalizeWindow } = require("./queries");
 
-// Metric keys per kind, in display order. Unknown values are always null.
+// Metric keys per kind, in display order, then the *At keys. Unknown values
+// (failed or missing call) are always null; a successful call with no data
+// is "idle" for gauges and 0 for counts.
 const METRIC_KEYS = Object.freeze({
-  function2: Object.freeze(["cpuPct", "memPct", "reqPerMin", "errPerMin", "instances"]),
-  function1: Object.freeze(["cpuPct", "execPerMin", "memBytes", "memPct"]),
+  function2: Object.freeze(["cpuPct", "memPct", "reqPerMin", "errPerMin", "instances", "cpuAt", "memAt"]),
+  function1: Object.freeze(["cpuPct", "execPerMin", "memBytes", "memPct", "memAt"]),
   firestore: Object.freeze(["readsPerMin", "writesPerMin", "deletesPerMin"]),
   bucket: Object.freeze(["reqPerMin", "bytesStored"]),
-  hosting: Object.freeze(["bytesServed", "reqPerMin"]),
+  hosting: Object.freeze(["bytesServed"]),
   scheduler: Object.freeze(["lastRunAt", "lastResult"]),
 });
 
 const MAX_KEYS = new Set(["cpuPct", "memPct"]);
+
+// Time of the latest value for each MAX key.
+const AT_KEYS = Object.freeze({ cpuAt: "cpuPct", memAt: "memPct" });
+
+const IDLE = "idle";
 
 function toNumber(value) {
   if (value === null || value === undefined) return null;
@@ -53,15 +60,55 @@ function pointsOf(seriesList) {
   return out;
 }
 
-// Series for one service, or null when the call failed or returned nothing for it.
+// Series for one service: null when the call failed or is missing, otherwise
+// the matching series (empty when the call succeeded with nothing for it).
 function seriesFor(results, key, service) {
   const result = results[key];
   if (!result || !result.ok || !Array.isArray(result.series)) return null;
   const label = RESOURCES[service.kind].label;
-  const matching = result.series.filter(
+  return result.series.filter(
     (s) => s && s.resource && s.resource.labels && s.resource.labels[label] === service.resourceLabel,
   );
-  return matching.length > 0 ? matching : null;
+}
+
+// Newest point anywhere in the list, or null when there is none.
+function newestPoint(seriesList) {
+  if (!seriesList) return null;
+  let best = null;
+  for (const p of pointsOf(seriesList)) if (best === null || p.t > best.t) best = p;
+  return best === null ? null : { t: best.t, v: best.v };
+}
+
+// Latest gauge value and its time: null when the call failed, "idle" when it
+// succeeded without points.
+function gauge(seriesList, factor) {
+  if (!seriesList) return { value: null, at: null };
+  const point = newestPoint(seriesList);
+  if (!point) return { value: IDLE, at: null };
+  return { value: point.v * factor, at: new Date(point.t).toISOString() };
+}
+
+// Sum per minute: null when the call failed, 0 when it succeeded without points.
+function countPerMinute(seriesList, windowSeconds) {
+  if (!seriesList) return null;
+  return (sumOf(seriesList) || 0) / (windowSeconds / 60);
+}
+
+// Latest count: null when the call failed, 0 when it succeeded without points.
+function latestCount(seriesList) {
+  if (!seriesList) return null;
+  const value = latest(seriesList);
+  return value === null ? 0 : value;
+}
+
+// Trend points, or a flat zero line when every input call succeeded without points.
+function trendOrFlat(seriesLists, windowSeconds, nowMs) {
+  const points = trendOf(seriesLists);
+  if (points.length > 0 || seriesLists.some((list) => !list)) return points;
+  return [
+    { t: new Date(nowMs - windowSeconds * 1000).toISOString(), v: 0 },
+    { t: new Date(nowMs).toISOString(), v: 0 },
+  ];
 }
 
 function latest(seriesList) {
@@ -78,15 +125,6 @@ function sumOf(seriesList) {
   const points = pointsOf(seriesList);
   if (points.length === 0) return null;
   return points.reduce((acc, p) => acc + p.v, 0);
-}
-
-function perMinute(seriesList, windowSeconds) {
-  const total = sumOf(seriesList);
-  return total === null ? null : total / (windowSeconds / 60);
-}
-
-function scale(value, factor) {
-  return value === null ? null : value * factor;
 }
 
 // Sums aligned points that share a timestamp and sorts them by time.
@@ -114,61 +152,66 @@ function isSuccessCode(code) {
   return /^2\d\d$/.test(String(code)) || code === "OK";
 }
 
-function function2Metrics(results, service, windowSeconds) {
+function function2Metrics(results, service, windowSeconds, nowMs) {
   const requests = seriesFor(results, "run.requests", service);
   let errPerMin = null;
   if (requests) {
     const errors = withLabel(requests, "response_code_class", ["4xx", "5xx"]);
-    errPerMin = errors.length > 0 ? perMinute(errors, windowSeconds) : 0;
+    errPerMin = errors.length > 0 ? countPerMinute(errors, windowSeconds) : 0;
   }
+  const cpu = gauge(seriesFor(results, "run.cpu", service), 100);
+  const mem = gauge(seriesFor(results, "run.memory", service), 100);
   return {
     metrics: {
-      cpuPct: scale(latest(seriesFor(results, "run.cpu", service)), 100),
-      memPct: scale(latest(seriesFor(results, "run.memory", service)), 100),
-      reqPerMin: perMinute(requests, windowSeconds),
+      cpuPct: cpu.value,
+      memPct: mem.value,
+      reqPerMin: countPerMinute(requests, windowSeconds),
       errPerMin,
-      instances: latest(seriesFor(results, "run.instances", service)),
+      instances: latestCount(seriesFor(results, "run.instances", service)),
+      cpuAt: cpu.at,
+      memAt: mem.at,
     },
-    points: trendOf([requests]),
+    points: trendOrFlat([requests], windowSeconds, nowMs),
   };
 }
 
-function function1Metrics(results, service, windowSeconds) {
+function function1Metrics(results, service, windowSeconds, nowMs) {
   const executions = seriesFor(results, "gen1.executions", service);
-  const memBytes = latest(seriesFor(results, "gen1.memory", service));
+  const mem = gauge(seriesFor(results, "gen1.memory", service), 1);
   return {
     metrics: {
       // 1st gen functions do not report CPU utilisation.
       cpuPct: null,
-      execPerMin: perMinute(executions, windowSeconds),
-      memBytes,
-      memPct: scale(memBytes, 100 / GEN1_MEMORY_BYTES),
+      execPerMin: countPerMinute(executions, windowSeconds),
+      memBytes: mem.value,
+      memPct: typeof mem.value === "number" ? (mem.value * 100) / GEN1_MEMORY_BYTES : mem.value,
+      memAt: mem.at,
     },
-    points: trendOf([executions]),
+    points: trendOrFlat([executions], windowSeconds, nowMs),
   };
 }
 
-function firestoreMetrics(results, service, windowSeconds) {
+function firestoreMetrics(results, service, windowSeconds, nowMs) {
   const reads = seriesFor(results, "firestore.reads", service);
   const writes = seriesFor(results, "firestore.writes", service);
   return {
     metrics: {
-      readsPerMin: perMinute(reads, windowSeconds),
-      writesPerMin: perMinute(writes, windowSeconds),
-      deletesPerMin: perMinute(seriesFor(results, "firestore.deletes", service), windowSeconds),
+      readsPerMin: countPerMinute(reads, windowSeconds),
+      writesPerMin: countPerMinute(writes, windowSeconds),
+      deletesPerMin: countPerMinute(seriesFor(results, "firestore.deletes", service), windowSeconds),
     },
-    points: trendOf([reads, writes]),
+    points: trendOrFlat([reads, writes], windowSeconds, nowMs),
   };
 }
 
-function bucketMetrics(results, service, windowSeconds) {
+function bucketMetrics(results, service, windowSeconds, nowMs) {
   const requests = seriesFor(results, "bucket.requests", service);
   return {
     metrics: {
-      reqPerMin: perMinute(requests, windowSeconds),
+      reqPerMin: countPerMinute(requests, windowSeconds),
       bytesStored: latest(seriesFor(results, "bucket.bytes", service)),
     },
-    points: trendOf([requests]),
+    points: trendOrFlat([requests], windowSeconds, nowMs),
   };
 }
 
@@ -177,8 +220,6 @@ function hostingMetrics(results, service) {
   return {
     metrics: {
       bytesServed: sumOf(sent),
-      // No request-count series is queried for Hosting.
-      reqPerMin: null,
     },
     points: trendOf([sent]),
   };
@@ -217,8 +258,18 @@ function totalFor(key, values) {
   if (present.length === 0) return null;
   if (key === "lastRunAt") return present.reduce((a, b) => (Date.parse(b) > Date.parse(a) ? b : a));
   if (key === "lastResult") return present.includes("failed") ? "failed" : "success";
-  if (MAX_KEYS.has(key)) return Math.max(...present);
-  return present.reduce((a, b) => a + b, 0);
+  const numbers = present.filter((v) => typeof v === "number");
+  if (numbers.length === 0) return present.includes(IDLE) ? IDLE : null;
+  if (MAX_KEYS.has(key)) return Math.max(...numbers);
+  return numbers.reduce((a, b) => a + b, 0);
+}
+
+// Time of the first service holding the numeric max of maxKey, else null.
+function atOfMax(services, atKey, maxKey) {
+  const max = totalFor(maxKey, services.map((s) => s.metrics[maxKey]));
+  if (typeof max !== "number") return null;
+  const holder = services.find((s) => s.metrics[maxKey] === max);
+  return (holder && holder.metrics[atKey]) || null;
 }
 
 function buildTotals(services) {
@@ -227,7 +278,9 @@ function buildTotals(services) {
     const ofKind = services.filter((s) => s.kind === kind);
     totals[kind] = {};
     for (const key of METRIC_KEYS[kind]) {
-      totals[kind][key] = totalFor(key, ofKind.map((s) => s.metrics[key]));
+      totals[kind][key] = AT_KEYS[key]
+        ? atOfMax(ofKind, key, AT_KEYS[key])
+        : totalFor(key, ofKind.map((s) => s.metrics[key]));
     }
   }
   return totals;

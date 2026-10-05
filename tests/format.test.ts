@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatBytes, formatValue } from "../src/format";
+import { IDLE, ageText, formatBytes, formatValue } from "../src/format";
 import { sparkline } from "../src/sparkline";
 
 describe("formatValue", () => {
@@ -41,6 +41,30 @@ describe("formatValue", () => {
   it("treats non-finite numbers as not available", () => {
     expect(formatValue("cpuPct", NaN)).toBe("not available");
     expect(formatValue("reqPerMin", Infinity)).toBe("not available");
+  });
+});
+
+describe("ageText", () => {
+  const generatedAt = "2026-01-01T12:00:00.000Z";
+
+  it("shows just now under a minute", () => {
+    expect(ageText(generatedAt, generatedAt)).toBe("just now");
+    expect(ageText(generatedAt, "2026-01-01T11:59:30.000Z")).toBe("just now");
+  });
+
+  it("shows whole minutes", () => {
+    expect(ageText(generatedAt, "2026-01-01T11:37:00.000Z")).toBe("23 min ago");
+  });
+
+  it("is null for invalid input", () => {
+    expect(ageText(generatedAt, "garbage")).toBeNull();
+    expect(ageText("garbage", generatedAt)).toBeNull();
+    expect(ageText(generatedAt, null)).toBeNull();
+    expect(ageText(undefined, generatedAt)).toBeNull();
+  });
+
+  it("passes idle through formatValue", () => {
+    expect(formatValue("cpuPct", IDLE)).toBe("idle");
   });
 });
 

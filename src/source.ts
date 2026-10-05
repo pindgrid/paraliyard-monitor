@@ -1,5 +1,5 @@
 import sample from "./mock/sample-metrics.json";
-import type { MetricsResponse } from "./types";
+import type { MetricRecord, MetricsResponse } from "./types";
 
 export interface MetricsSource {
   load(): Promise<MetricsResponse>;
@@ -14,6 +14,13 @@ function shift(iso: unknown, offsetMs: number): unknown {
   return Number.isFinite(ms) ? new Date(ms + offsetMs).toISOString() : iso;
 }
 
+// Moves the CPU / RAM value times so their ages stay the same.
+function shiftAtKeys(metrics: MetricRecord, offsetMs: number): void {
+  for (const key of ["cpuAt", "memAt"]) {
+    if (key in metrics) metrics[key] = shift(metrics[key], offsetMs) as string | null;
+  }
+}
+
 // Bundled sample data, moved in time so the newest point is "now". Never fetches.
 export function createMockSource(now: () => number = Date.now): MetricsSource {
   return {
@@ -26,9 +33,11 @@ export function createMockSource(now: () => number = Date.now): MetricsSource {
       for (const s of data.services) {
         for (const p of s.trend.points) p.t = shift(p.t, offset) as string;
         if ("lastRunAt" in s.metrics) s.metrics.lastRunAt = shift(s.metrics.lastRunAt, offset) as string | null;
+        shiftAtKeys(s.metrics, offset);
       }
       const schedulerTotals = data.totals.scheduler;
       if (schedulerTotals) schedulerTotals.lastRunAt = shift(schedulerTotals.lastRunAt, offset) as string | null;
+      for (const totals of Object.values(data.totals)) if (totals) shiftAtKeys(totals, offset);
       return data;
     },
   };

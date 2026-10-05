@@ -13,7 +13,7 @@ const EXPECTED_HEADERS: Record<string, string[]> = {
   function1: ["Name", "CPU %", "Executions/min", "Memory", "RAM %", "Trend"],
   firestore: ["Name", "Reads/min", "Writes/min", "Deletes/min", "Trend"],
   bucket: ["Name", "Requests/min", "Bytes stored", "Trend"],
-  hosting: ["Name", "Bytes served", "Requests/min", "Trend"],
+  hosting: ["Name", "Bytes served", "Trend"],
   scheduler: ["Name", "Last run", "Last result", "Trend"],
 };
 
@@ -146,6 +146,69 @@ describe("renderDashboard", () => {
     }
     renderDashboard(root, SERVICES, fixture(), { state: "ok", updatedAt: at });
     expect(root.querySelector("[data-status]")?.textContent).toContain(new Date(at).toLocaleTimeString());
+  });
+
+  it("shows the age of a CPU value next to it", () => {
+    const data = fixture();
+    const target = data.services.find((s) => s.id === "function2:pyMintOnCrewClaim");
+    if (!target) throw new Error("fixture missing service");
+    target.metrics.cpuPct = 12;
+    target.metrics.cpuAt = new Date(Date.parse(data.generatedAt) - 23 * 60000).toISOString();
+    renderDashboard(root, SERVICES, data, { state: "ok" });
+    const td = cell("function2:pyMintOnCrewClaim", "cpuPct");
+    expect(td.textContent).toContain("12 %");
+    expect(td.textContent).toContain("· 23 min ago");
+    expect(td.classList.contains("na")).toBe(false);
+  });
+
+  it("shows idle for an idle service's CPU and RAM and 0 for its counts", () => {
+    renderDashboard(root, SERVICES, fixture(), { state: "ok" });
+    for (const key of ["cpuPct", "memPct"]) {
+      const td = cell("function2:pyWeeklyAccounts", key);
+      expect(td.textContent).toBe("idle");
+      expect(td.classList.contains("na")).toBe(false);
+    }
+    for (const key of ["reqPerMin", "errPerMin", "instances"]) {
+      expect(cell("function2:pyWeeklyAccounts", key).textContent).toBe("0");
+    }
+    const row = root.querySelector('tr[data-service-id="function2:pyWeeklyAccounts"]');
+    expect(row?.querySelector("td.trend svg")).not.toBeNull();
+  });
+
+  it("shows not available with the na class for a failed query", () => {
+    const data = fixture();
+    const target = data.services.find((s) => s.id === "function2:pyNightlyExport");
+    if (!target) throw new Error("fixture missing service");
+    target.metrics.cpuPct = null;
+    target.metrics.cpuAt = null;
+    renderDashboard(root, SERVICES, data, { state: "ok" });
+    const td = cell("function2:pyNightlyExport", "cpuPct");
+    expect(td.textContent).toBe("not available");
+    expect(td.classList.contains("na")).toBe(true);
+  });
+
+  it("never prefixes idle or not available totals with max", () => {
+    const data = fixture();
+    const totals = data.totals.function2;
+    if (!totals) throw new Error("fixture missing totals");
+    totals.cpuPct = "idle";
+    totals.cpuAt = null;
+    totals.memPct = null;
+    totals.memAt = null;
+    renderDashboard(root, SERVICES, data, { state: "ok" });
+    const fn2 = root.querySelector<HTMLElement>('tr[data-totals="function2"]');
+    expect(fn2?.querySelector('[data-key="cpuPct"]')?.textContent).toBe("idle");
+    expect(fn2?.querySelector('[data-key="memPct"]')?.textContent).toBe("not available");
+    expect(root.textContent).not.toContain("max idle");
+    expect(root.textContent).not.toContain("max not available");
+  });
+
+  it("puts the age of the max total in its title", () => {
+    renderDashboard(root, SERVICES, fixture(), { state: "ok" });
+    const fn2 = root.querySelector<HTMLElement>('tr[data-totals="function2"]');
+    const cpu = fn2?.querySelector<HTMLElement>('[data-key="cpuPct"]');
+    expect(cpu?.textContent).toBe("max 21.4 %");
+    expect(cpu?.title).toBe("23 min ago");
   });
 
   it("paused shows only the paused message", () => {

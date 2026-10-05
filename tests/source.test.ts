@@ -36,6 +36,16 @@ describe("createMockSource", () => {
     expect(data.totals.scheduler?.lastRunAt).toBe(nightly?.metrics.lastRunAt);
   });
 
+  it("moves cpuAt and memAt so their ages stay the same", async () => {
+    const data = await createMockSource().load();
+    const mint = data.services.find((s) => s.id === "function2:pyMintOnCrewClaim");
+    expect(Date.parse(String(mint?.metrics.cpuAt))).toBe(NOW - 23 * 60000);
+    expect(Date.parse(String(mint?.metrics.memAt))).toBe(NOW - 60000);
+    expect(data.totals.function2?.cpuAt).toBe(mint?.metrics.cpuAt);
+    const idle = data.services.find((s) => s.id === "function2:pyWeeklyAccounts");
+    expect(idle?.metrics.cpuAt).toBeNull();
+  });
+
   it("does not modify the bundled fixture", async () => {
     await createMockSource().load();
     expect(sample.generatedAt).toBe("2026-01-01T12:00:00.000Z");

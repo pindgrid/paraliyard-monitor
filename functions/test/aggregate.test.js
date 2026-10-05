@@ -62,8 +62,8 @@ test("missing or failed metric is null, a real 0 is 0", () => {
   assert.equal(fn.memPct, null);
   assert.equal(fn.reqPerMin, null);
   assert.equal(fn.errPerMin, null);
-  // Another service with no series in a successful call is still null.
-  assert.equal(find(payload, "function2:pyWeeklyAccounts").metrics.cpuPct, null);
+  // Another service with no series in a successful call is idle.
+  assert.equal(find(payload, "function2:pyWeeklyAccounts").metrics.cpuPct, "idle");
 });
 
 test("function2 rates, utilisation and errors", () => {
@@ -140,7 +140,7 @@ test("bucket bytes use the latest point and hosting sums bytes", () => {
   assert.equal(find(payload, "bucket:mineral-proton-438104-g8-paraliyard").metrics.reqPerMin, null);
   const hosting = find(payload, "hosting:paraliyard").metrics;
   assert.equal(hosting.bytesServed, 300);
-  assert.equal(hosting.reqPerMin, null);
+  assert.equal("reqPerMin" in hosting, false);
 });
 
 test("scheduler last run and result", () => {
@@ -193,6 +193,114 @@ test("totals sum rates, take max of percentages and are null when all null", () 
   assert.equal(totals.function2.memPct, null);
   assert.equal(totals.bucket.bytesStored, 15);
   assert.equal(totals.bucket.reqPerMin, null);
-  assert.deepEqual(totals.function1, { cpuPct: null, execPerMin: null, memBytes: null, memPct: null });
+  assert.deepEqual(totals.function1, { cpuPct: null, execPerMin: null, memBytes: null, memPct: null, memAt: null });
   assert.deepEqual(Object.keys(totals), ["function2", "function1", "firestore", "bucket", "hosting", "scheduler"]);
+});
+
+const ALL_KEYS = [
+  "run.cpu",
+  "run.memory",
+  "run.requests",
+  "run.instances",
+  "gen1.executions",
+  "gen1.memory",
+  "firestore.reads",
+  "firestore.writes",
+  "firestore.deletes",
+  "bucket.requests",
+  "bucket.bytes",
+  "hosting.sentBytes",
+  "scheduler.attempts",
+];
+
+function allEmpty() {
+  return Object.fromEntries(ALL_KEYS.map((key) => [key, ok()]));
+}
+
+test("every query with an empty series list gives idle gauges and zero counts", () => {
+  assert.equal(ALL_KEYS.length, 13);
+  const payload = buildPayload({ results: allEmpty(), windowKey: "1h", nowMs: NOW });
+  for (const s of payload.services.filter((v) => v.kind === "function2")) {
+    assert.equal(s.metrics.reqPerMin, 0, s.id);
+    assert.equal(s.metrics.errPerMin, 0, s.id);
+    assert.equal(s.metrics.instances, 0, s.id);
+    assert.equal(s.metrics.cpuPct, "idle", s.id);
+    assert.equal(s.metrics.memPct, "idle", s.id);
+    assert.equal(s.metrics.cpuAt, null, s.id);
+    assert.equal(s.metrics.memAt, null, s.id);
+  }
+  const fn1 = find(payload, "function1:pyCleanupOnAuthDelete").metrics;
+  assert.equal(fn1.execPerMin, 0);
+  assert.equal(fn1.memBytes, "idle");
+  assert.equal(fn1.memPct, "idle");
+  assert.equal(fn1.cpuPct, null);
+  assert.equal(fn1.memAt, null);
+  const fs = find(payload, "firestore:yard").metrics;
+  assert.equal(fs.readsPerMin, 0);
+  assert.equal(fs.writesPerMin, 0);
+  assert.equal(fs.deletesPerMin, 0);
+  for (const s of payload.services.filter((v) => v.kind === "bucket")) assert.equal(s.metrics.reqPerMin, 0, s.id);
+});
+
+test("failed calls keep every affected metric null", () => {
+  const failed = Object.fromEntries(ALL_KEYS.map((key) => [key, { ok: false }]));
+  for (const results of [{}, failed]) {
+    const payload = buildPayload({ results, windowKey: "1h", nowMs: NOW });
+    for (const s of payload.services) {
+      for (const [key, value] of Object.entries(s.metrics)) assert.equal(value, null, `${s.id} ${key}`);
+      assert.deepEqual(s.trend.points, [], s.id);
+    }
+  }
+});
+
+test("cpu uses the newest point with its time", () => {
+  const at = NOW - 23 * MINUTE;
+  const results = {
+    "run.cpu": ok({
+      resource: { labels: { service_name: "pymintoncrewclaim" } },
+      metric: { labels: {} },
+      points: [{ interval: { endTime: { seconds: String(at / 1000), nanos: 0 } }, value: { doubleValue: 0.12 } }],
+    }),
+  };
+  const s = find(buildPayload({ results, windowKey: "1h", nowMs: NOW }), "function2:pyMintOnCrewClaim").metrics;
+  assert.equal(s.cpuPct, 12);
+  assert.equal(s.cpuAt, new Date(at).toISOString());
+  assert.equal(s.memAt, null);
+});
+
+test("function2 totals take the max with its time, idle when all idle, null when failed", () => {
+  const results = {
+    "run.cpu": ok(
+      series({ service_name: "pynightlyexport" }, [0.2]),
+      series({ service_name: "pyweeklyaccounts" }, [null, 0.7]),
+    ),
+    "run.memory": ok(),
+  };
+  const totals = buildPayload({ results, windowKey: "1h", nowMs: NOW }).totals.function2;
+  assert.equal(totals.cpuPct, 70);
+  assert.equal(totals.cpuAt, new Date(NOW - MINUTE).toISOString());
+  assert.equal(totals.memPct, "idle");
+  assert.equal(totals.memAt, null);
+
+  const failed = buildPayload({ results: { "run.cpu": { ok: false } }, windowKey: "1h", nowMs: NOW }).totals.function2;
+  assert.equal(failed.cpuPct, null);
+  assert.equal(failed.cpuAt, null);
+});
+
+test("idle trend is a flat line, failed trend is empty", () => {
+  const payload = buildPayload({ results: allEmpty(), windowKey: "1h", nowMs: NOW });
+  const flat = [
+    { t: new Date(NOW - 3600000).toISOString(), v: 0 },
+    { t: new Date(NOW).toISOString(), v: 0 },
+  ];
+  for (const id of [
+    "function2:pyWeeklyAccounts",
+    "function1:pyCleanupOnAuthDelete",
+    "firestore:yard",
+    "bucket:mineral-proton-438104-g8-paraliyard",
+  ]) {
+    assert.deepEqual(find(payload, id).trend.points, flat, id);
+  }
+  const failed = buildPayload({ results: { "run.requests": { ok: false } }, windowKey: "1h", nowMs: NOW });
+  assert.deepEqual(find(failed, "function2:pyWeeklyAccounts").trend.points, []);
 });

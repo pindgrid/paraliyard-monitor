@@ -10,19 +10,26 @@ export interface ServiceInfo {
   name: string;
 }
 
+// "idle": the call succeeded but the service reported no data in the window.
+export type Idle = "idle";
+
 export interface Function2Metrics {
-  cpuPct: number | null;
-  memPct: number | null;
+  cpuPct: number | Idle | null;
+  memPct: number | Idle | null;
   reqPerMin: number | null;
   errPerMin: number | null;
   instances: number | null;
+  // ISO time of the latest CPU / RAM value.
+  cpuAt: string | null;
+  memAt: string | null;
 }
 
 export interface Function1Metrics {
   cpuPct: number | null;
   execPerMin: number | null;
-  memBytes: number | null;
-  memPct: number | null;
+  memBytes: number | Idle | null;
+  memPct: number | Idle | null;
+  memAt: string | null;
 }
 
 export interface FirestoreMetrics {
@@ -38,7 +45,6 @@ export interface BucketMetrics {
 
 export interface HostingMetrics {
   bytesServed: number | null;
-  reqPerMin: number | null;
 }
 
 export type SchedulerResult = "success" | "failed";

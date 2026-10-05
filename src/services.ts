@@ -66,10 +66,7 @@ export const COLUMNS: Record<Kind, readonly Column[]> = {
     { key: "reqPerMin", label: "Requests/min" },
     { key: "bytesStored", label: "Bytes stored" },
   ],
-  hosting: [
-    { key: "bytesServed", label: "Bytes served" },
-    { key: "reqPerMin", label: "Requests/min" },
-  ],
+  hosting: [{ key: "bytesServed", label: "Bytes served" }],
   scheduler: [
     { key: "lastRunAt", label: "Last run" },
     { key: "lastResult", label: "Last result" },
@@ -78,3 +75,21 @@ export const COLUMNS: Record<Kind, readonly Column[]> = {
 
 // Totals for these keys are the maximum, not the sum.
 export const MAX_KEYS: ReadonlySet<string> = new Set(["cpuPct", "memPct"]);
+
+// Key holding the ISO time of each gauge's latest value.
+export const AGE_KEYS: Readonly<Record<string, string>> = { cpuPct: "cpuAt", memPct: "memAt" };
+
+// *At keys each kind reports, after its column keys.
+const AT_KEYS_BY_KIND: Record<Kind, readonly string[]> = {
+  function2: ["cpuAt", "memAt"],
+  function1: ["memAt"],
+  firestore: [],
+  bucket: [],
+  hosting: [],
+  scheduler: [],
+};
+
+// All metric keys of a kind, in the same order as the API.
+export function metricKeys(kind: Kind): string[] {
+  return [...COLUMNS[kind].map((c) => c.key), ...AT_KEYS_BY_KIND[kind]];
+}

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import csv from "../data/paraliyard-services.csv?raw";
 import sample from "../src/mock/sample-metrics.json";
-import { COLUMNS, KIND_ORDER, MAX_KEYS, SERVICES } from "../src/services";
+import { COLUMNS, KIND_ORDER, MAX_KEYS, SERVICES, metricKeys } from "../src/services";
 import type { Kind, MetricsResponse, MetricValue } from "../src/types";
 
 const fixture = sample as unknown as MetricsResponse;
@@ -33,7 +33,8 @@ function expectedTotal(key: string, values: MetricValue[]): MetricValue {
     return (present as string[]).reduce((a, b) => (Date.parse(b) > Date.parse(a) ? b : a));
   }
   if (key === "lastResult") return present.includes("failed") ? "failed" : "success";
-  const numbers = present as number[];
+  const numbers = present.filter((v): v is number => typeof v === "number");
+  if (numbers.length === 0) return present.includes("idle") ? "idle" : null;
   if (MAX_KEYS.has(key)) return Math.max(...numbers);
   return numbers.reduce((a, b) => a + b, 0);
 }
@@ -78,18 +79,18 @@ describe("mock fixture", () => {
 
   it("has the metric keys of each kind's columns", () => {
     for (const s of fixture.services) {
-      expect(Object.keys(s.metrics), s.id).toEqual(COLUMNS[s.kind].map((c) => c.key));
+      expect(Object.keys(s.metrics), s.id).toEqual(metricKeys(s.kind));
     }
     for (const kind of KIND_ORDER) {
-      expect(Object.keys(fixture.totals[kind] ?? {}), kind).toEqual(COLUMNS[kind].map((c) => c.key));
+      expect(Object.keys(fixture.totals[kind] ?? {}), kind).toEqual(metricKeys(kind));
     }
   });
 
   it("includes the documented nulls", () => {
     const byId = new Map(fixture.services.map((s) => [s.id, s]));
     expect(byId.get("function1:pyCleanupOnAuthDelete")?.metrics.cpuPct).toBeNull();
-    expect(byId.get("hosting:paraliyard")?.metrics.reqPerMin).toBeNull();
-    expect(byId.get("hosting:preparaliyard")?.metrics.reqPerMin).toBeNull();
+    expect("reqPerMin" in (byId.get("hosting:paraliyard")?.metrics ?? {})).toBe(false);
+    expect("reqPerMin" in (byId.get("hosting:preparaliyard")?.metrics ?? {})).toBe(false);
     const results = fixture.services.filter((s) => s.kind === "scheduler").map((s) => s.metrics.lastResult);
     expect(results).toContain(null);
   });

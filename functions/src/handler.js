@@ -25,7 +25,7 @@ function createHandler({ getClient, now = Date.now, log = console }) {
   async function refresh(windowKey, entry) {
     const nowMs = now();
     try {
-      const results = await collect(getClient(), buildRequests(windowKey, nowMs));
+      const results = await collect(getClient(), buildRequests(windowKey, nowMs), { log });
       entry.data = buildPayload({ results, windowKey, nowMs });
       entry.stale = false;
       const failed = Object.values(results).filter((r) => !r.ok).length;

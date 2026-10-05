@@ -1,6 +1,7 @@
 import type { MetricValue } from "./types";
 
 export const NOT_AVAILABLE = "not available";
+export const IDLE = "idle";
 
 const PERCENT_KEYS = new Set(["cpuPct", "memPct"]);
 const RATE_KEYS = new Set(["reqPerMin", "errPerMin", "execPerMin", "readsPerMin", "writesPerMin", "deletesPerMin"]);
@@ -28,6 +29,16 @@ export function formatBytes(v: number): string {
 function formatTime(iso: string): string {
   const ms = Date.parse(iso);
   return Number.isFinite(ms) ? new Date(ms).toLocaleString() : NOT_AVAILABLE;
+}
+
+// Age of a value relative to the response time, or null for invalid times.
+export function ageText(generatedAtIso: string | null | undefined, atIso: string | null | undefined): string | null {
+  if (!generatedAtIso || !atIso) return null;
+  const g = Date.parse(generatedAtIso);
+  const a = Date.parse(atIso);
+  if (!Number.isFinite(g) || !Number.isFinite(a)) return null;
+  const m = Math.floor((g - a) / 60000);
+  return m < 1 ? "just now" : `${m} min ago`;
 }
 
 // Display text for one metric. Missing values are always "not available", never 0.

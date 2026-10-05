@@ -1,5 +1,5 @@
-import { NOT_AVAILABLE, formatValue } from "./format";
-import { COLUMNS, KIND_LABELS, KIND_ORDER, MAX_KEYS } from "./services";
+import { NOT_AVAILABLE, ageText, formatValue } from "./format";
+import { AGE_KEYS, COLUMNS, KIND_LABELS, KIND_ORDER, MAX_KEYS } from "./services";
 import { sparkline } from "./sparkline";
 import type { Kind, MetricRecord, MetricsResponse, ServiceInfo, ServiceMetrics } from "./types";
 
@@ -47,12 +47,34 @@ export function statusText(status: Status): string {
   }
 }
 
-function valueCell(doc: Document, key: string, value: MetricRecord[string] | undefined, prefix = ""): HTMLElement {
+interface CellOptions {
+  prefix?: string;
+  age?: string | null;
+  ageAsTitle?: boolean;
+}
+
+// The prefix and age only apply to numbers, never to "idle" or "not available".
+function valueCell(
+  doc: Document,
+  key: string,
+  value: MetricRecord[string] | undefined,
+  { prefix = "", age = null, ageAsTitle = false }: CellOptions = {},
+): HTMLElement {
   const text = formatValue(key, value);
   const isMissing = text === NOT_AVAILABLE;
-  const td = el(doc, "td", isMissing ? text : `${prefix}${text}`, isMissing ? "na" : undefined);
+  const isNumber = typeof value === "number" && !isMissing;
+  let shown = isNumber ? `${prefix}${text}` : text;
+  if (isNumber && age && !ageAsTitle) shown = `${shown} · ${age}`;
+  const td = el(doc, "td", shown, isMissing ? "na" : undefined);
+  if (isNumber && age && ageAsTitle) td.title = age;
   td.dataset.key = key;
   return td;
+}
+
+function ageOf(metrics: MetricRecord | undefined, key: string, generatedAt: string | undefined): string | null {
+  const atKey = AGE_KEYS[key];
+  const at = atKey ? metrics?.[atKey] : undefined;
+  return typeof at === "string" ? ageText(generatedAt, at) : null;
 }
 
 function renderKind(
@@ -61,6 +83,7 @@ function renderKind(
   services: readonly ServiceInfo[],
   byId: Map<string, ServiceMetrics>,
   totals: MetricRecord | undefined,
+  generatedAt: string | undefined,
 ): HTMLElement {
   const columns = COLUMNS[kind];
   const section = el(doc, "section", undefined, "kind");
@@ -80,7 +103,10 @@ function renderKind(
     const row = el(doc, "tr");
     row.dataset.serviceId = service.id;
     row.appendChild(el(doc, "th", service.name)).setAttribute("scope", "row");
-    for (const column of columns) row.appendChild(valueCell(doc, column.key, data?.metrics[column.key]));
+    for (const column of columns) {
+      const age = ageOf(data?.metrics, column.key, generatedAt);
+      row.appendChild(valueCell(doc, column.key, data?.metrics[column.key], { age }));
+    }
     const trend = el(doc, "td", undefined, "trend");
     trend.appendChild(sparkline(data?.trend.points ?? [], doc));
     row.appendChild(trend);
@@ -93,7 +119,8 @@ function renderKind(
   totalsRow.appendChild(el(doc, "th", "Total")).setAttribute("scope", "row");
   for (const column of columns) {
     const prefix = MAX_KEYS.has(column.key) ? "max " : "";
-    totalsRow.appendChild(valueCell(doc, column.key, totals?.[column.key], prefix));
+    const age = ageOf(totals, column.key, generatedAt);
+    totalsRow.appendChild(valueCell(doc, column.key, totals?.[column.key], { prefix, age, ageAsTitle: true }));
   }
   totalsRow.appendChild(el(doc, "td", "", "trend"));
   table.appendChild(el(doc, "tfoot")).appendChild(totalsRow);
@@ -120,6 +147,8 @@ export function renderDashboard(
   }
 
   const byId = new Map((data?.services ?? []).map((s) => [s.id, s]));
-  const sections = KIND_ORDER.map((kind) => renderKind(doc, kind, services, byId, data?.totals[kind]));
+  const sections = KIND_ORDER.map((kind) =>
+    renderKind(doc, kind, services, byId, data?.totals[kind], data?.generatedAt),
+  );
   root.replaceChildren(banner, ...sections);
 }

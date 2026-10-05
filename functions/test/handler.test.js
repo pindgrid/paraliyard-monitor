@@ -210,6 +210,59 @@ test("a throwing getClient is treated as a failed refresh", async () => {
   assert.deepEqual(res.body, { error: "metrics unavailable" });
 });
 
+function loggedSetup(respond) {
+  const fake = createFakeClient({ respond });
+  const warnings = [];
+  const handler = createHandler({
+    getClient: () => fake.client,
+    now: () => START,
+    log: { warn: (line) => warnings.push(line), error() {} },
+  });
+  async function get() {
+    const res = fakeRes();
+    await handler(fakeReq(), res);
+    return res;
+  }
+  return { get, warnings };
+}
+
+test("a failed query logs one bounded line plus the summary and nulls its metrics", async () => {
+  const message = `7 PERMISSION_DENIED: ${"y".repeat(300)}\nmore`;
+  const { get, warnings } = loggedSetup((request) => {
+    if (metricTypeOf(request.filter) === METRIC_TYPES.RUN_CPU) {
+      throw Object.assign(new Error(message), {
+        code: 7,
+        metadata: { authorization: "Bearer fake-token-do-not-log" },
+      });
+    }
+    return defaultSeries(request);
+  });
+  const res = await get();
+  assert.equal(res.statusCode, 200);
+  assert.equal(warnings.length, 2);
+  const [line, summary] = warnings;
+  assert.ok(line.includes("key=run.cpu"), line);
+  assert.ok(line.includes("code=7"), line);
+  assert.ok(line.endsWith(`message=${message.slice(0, 200)}`), line);
+  assert.ok(!line.includes("fake-token"));
+  assert.equal(summary, "liveMonitorApi: 1 metric call(s) failed");
+  const fn = res.body.services.find((s) => s.id === "function2:pyMintOnCrewClaim").metrics;
+  assert.equal(fn.cpuPct, null);
+  assert.equal(fn.cpuAt, null);
+});
+
+test("a NOT_FOUND query is not logged and not counted as failed", async () => {
+  const { get, warnings } = loggedSetup((request) => {
+    if (metricTypeOf(request.filter) === METRIC_TYPES.RUN_CPU) {
+      throw Object.assign(new Error('5 NOT_FOUND: Cannot find metric(s) that match type = "x"'), { code: 5 });
+    }
+    return defaultSeries(request);
+  });
+  const res = await get();
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(warnings, []);
+});
+
 test("getClient is only called when a refresh starts", async () => {
   const { get, clientCreations } = setup();
   await get({ method: "POST" });
