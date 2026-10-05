@@ -1,0 +1,19 @@
+node_modules/
+dist/
+coverage/
+.firebase/
+*.log
+
+# Secrets: never commit env files, keys or credentials
+.env*
+!.env.example
+*.pem
+*.p12
+*.key
+service-account*.json
+*-sa.json
+*credentials*.json
+*-key.json
+*.key.json
+application_default_credentials.json
+gha-creds-*.json
