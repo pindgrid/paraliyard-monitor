@@ -48,6 +48,22 @@ function defaultSeries(request) {
   return out;
 }
 
+// One plausible series for a single-service (history) filter: a point per
+// alignment period across the interval, newest first, at most 400 points.
+function historySeries(request) {
+  const match = /resource\.labels\.([a-z_]+) = "([^"]+)"/.exec(request.filter);
+  if (!match) return [];
+  const startMs = Number(request.interval.startTime.seconds) * 1000;
+  const endMs = Number(request.interval.endTime.seconds) * 1000;
+  const stepMs = request.aggregation.alignmentPeriod.seconds * 1000;
+  const delta = request.aggregation.perSeriesAligner === "ALIGN_DELTA";
+  const points = [];
+  for (let i = 0, t = endMs; t > startMs && i < 400; i += 1, t -= stepMs) {
+    points.push(point(t, delta ? (i % 3) + 1 : 0.25 + (i % 4) * 0.05));
+  }
+  return [{ resource: { labels: { [match[1]]: match[2] } }, metric: { labels: {} }, points }];
+}
+
 // respond(request, callIndex) returns series, or throws to make that call fail.
 function createFakeClient({ respond = defaultSeries, delayMs = 0 } = {}) {
   const calls = [];
@@ -87,4 +103,4 @@ function createFakeClient({ respond = defaultSeries, delayMs = 0 } = {}) {
   };
 }
 
-module.exports = { createFakeClient, defaultSeries, metricTypeOf };
+module.exports = { createFakeClient, defaultSeries, historySeries, metricTypeOf };

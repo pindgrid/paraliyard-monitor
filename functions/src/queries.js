@@ -85,6 +85,20 @@ function buildFilter(def) {
   return clauses.join(" AND ");
 }
 
+// Filter for a single service of def's kind: the fixed metric and resource
+// types, only that service's resource label, plus constant extra clauses.
+function buildServiceFilter(def, service, extraClauses = []) {
+  const resource = RESOURCES[def.kind];
+  const clauses = [
+    `metric.type = ${quote(def.metricType)}`,
+    `resource.type = ${quote(resource.type)}`,
+    `resource.labels.${resource.label} = ${quote(service.resourceLabel)}`,
+  ];
+  if (resource.type === "cloud_run_revision") clauses.push(`resource.labels.location = ${quote(REGION)}`);
+  clauses.push(...extraClauses);
+  return clauses.join(" AND ");
+}
+
 function timestamp(ms) {
   return { seconds: Math.floor(ms / 1000), nanos: 0 };
 }
@@ -120,4 +134,4 @@ function buildRequests(windowKey, nowMs) {
   });
 }
 
-module.exports = { QUERY_DEFS, normalizeWindow, buildFilter, buildRequests };
+module.exports = { QUERY_DEFS, normalizeWindow, buildFilter, buildRequests, buildServiceFilter };

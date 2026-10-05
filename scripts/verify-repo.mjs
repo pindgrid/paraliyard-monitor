@@ -109,6 +109,31 @@ if (!existsSync(distConfig)) {
   }
 }
 
+// 5a. Built page: no script or stylesheet tags loading from another host.
+if (existsSync(distIndex)) {
+  const html = readFileSync(distIndex, "utf8");
+  const EXTERNAL_TAGS = [
+    [/<script\b[^>]*\bsrc\s*=\s*["']?\s*(https?:)?\/\//i, "<script src>"],
+    [/<link\b[^>]*\bhref\s*=\s*["']?\s*(https?:)?\/\//i, "<link href>"],
+  ];
+  for (const [pattern, label] of EXTERNAL_TAGS) {
+    if (pattern.test(html)) fail(`dist/index.html has an external ${label}`);
+  }
+}
+
+// 5b. Root runtime dependencies (bundled into the site) must be MIT or Apache-2.0.
+const ALLOWED_LICENSES = new Set(["MIT", "Apache-2.0"]);
+const rootPkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
+for (const name of Object.keys(rootPkg.dependencies || {})) {
+  const depPkgPath = join(ROOT, "node_modules", ...name.split("/"), "package.json");
+  if (!existsSync(depPkgPath)) {
+    fail(`dependency ${name} is not installed (run npm ci first)`);
+    continue;
+  }
+  const license = JSON.parse(readFileSync(depPkgPath, "utf8")).license;
+  if (!ALLOWED_LICENSES.has(license)) fail(`dependency ${name} has license ${JSON.stringify(license)}, expected MIT or Apache-2.0`);
+}
+
 // 6. functions/package.json rules.
 const fnPkgPath = join(ROOT, "functions", "package.json");
 if (!existsSync(fnPkgPath)) {

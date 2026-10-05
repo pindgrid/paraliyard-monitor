@@ -32,6 +32,9 @@ export function createMockSource(now: () => number = Date.now): MetricsSource {
       data.generatedAt = shift(data.generatedAt, offset) as string;
       for (const s of data.services) {
         for (const p of s.trend.points) p.t = shift(p.t, offset) as string;
+        for (const points of Object.values(s.trends ?? {})) {
+          for (const p of points ?? []) p.t = shift(p.t, offset) as string;
+        }
         if ("lastRunAt" in s.metrics) s.metrics.lastRunAt = shift(s.metrics.lastRunAt, offset) as string | null;
         shiftAtKeys(s.metrics, offset);
       }

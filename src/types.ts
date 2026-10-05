@@ -79,6 +79,8 @@ export interface ServiceMetrics {
   name: string;
   metrics: MetricRecord;
   trend: { points: TrendPoint[] };
+  // Per-metric trends: null when the call failed, [] for a gauge without samples.
+  trends: Record<string, TrendPoint[] | null>;
 }
 
 export interface MetricsResponse {
@@ -88,6 +90,23 @@ export interface MetricsResponse {
   services: ServiceMetrics[];
   totals: Partial<Record<Kind, MetricRecord>>;
 }
+
+export type HistoryRange = "1h" | "6h" | "24h" | "7d" | "30d" | "6w";
+
+// GET /api/history response.
+export interface HistoryResponse {
+  service: string;
+  metric: string;
+  range: HistoryRange;
+  unit: string;
+  points: TrendPoint[];
+  generatedAt: string;
+  stale?: boolean;
+}
+
+export type Route =
+  | { view: "overview" }
+  | { view: "history"; service: string; metric: string; range: HistoryRange };
 
 export type Mode = "mock" | "live" | "off";
 

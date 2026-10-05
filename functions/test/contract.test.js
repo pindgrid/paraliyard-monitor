@@ -50,3 +50,22 @@ test("handler payload matches the frontend fixture shape", async () => {
     assert.deepEqual(Object.keys(payload.totals[kind]), Object.keys(fixture.totals[kind]), kind);
   }
 });
+
+test("handler trends match the frontend fixture's trend keys and point shape", async () => {
+  const payload = await livePayload();
+  for (const [i, service] of payload.services.entries()) {
+    const expected = fixture.services[i];
+    assert.deepEqual(Object.keys(service.trends), Object.keys(expected.trends), service.id);
+    for (const trends of [service.trends, expected.trends]) {
+      for (const [key, points] of Object.entries(trends)) {
+        if (points === null) continue;
+        assert.ok(Array.isArray(points), `${service.id} ${key}`);
+        for (const point of points) {
+          assert.deepEqual(Object.keys(point), ["t", "v"], `${service.id} ${key}`);
+          assert.equal(typeof point.t, "string");
+          assert.equal(typeof point.v, "number");
+        }
+      }
+    }
+  }
+});

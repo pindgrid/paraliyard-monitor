@@ -1,0 +1,18 @@
+{
+  "ranges": [
+    { "key": "1h", "seconds": 3600, "alignmentSeconds": 60 },
+    { "key": "6h", "seconds": 21600, "alignmentSeconds": 60 },
+    { "key": "24h", "seconds": 86400, "alignmentSeconds": 300 },
+    { "key": "7d", "seconds": 604800, "alignmentSeconds": 3600 },
+    { "key": "30d", "seconds": 2592000, "alignmentSeconds": 10800 },
+    { "key": "6w", "seconds": 3628800, "alignmentSeconds": 14400 }
+  ],
+  "metricsByKind": {
+    "function2": ["cpuPct", "memPct", "reqPerMin", "errPerMin", "instances"],
+    "function1": ["execPerMin", "memBytes"],
+    "firestore": ["readsPerMin", "writesPerMin", "deletesPerMin"],
+    "bucket": ["reqPerMin", "bytesStored"],
+    "hosting": ["bytesServed"],
+    "scheduler": ["runs"]
+  }
+}

@@ -15,6 +15,18 @@ const METRIC_KEYS = Object.freeze({
   scheduler: Object.freeze(["lastRunAt", "lastResult"]),
 });
 
+// Per-metric trend keys per kind, in payload order. Built only from the
+// existing 13 results: null when the call failed; counts are a flat 0 line and
+// gauges are [] when the call succeeded without points.
+const TREND_KEYS = Object.freeze({
+  function2: Object.freeze(["reqPerMin", "errPerMin", "cpuPct", "memPct", "instances"]),
+  function1: Object.freeze(["execPerMin", "memBytes"]),
+  firestore: Object.freeze(["readsPerMin", "writesPerMin", "deletesPerMin"]),
+  bucket: Object.freeze(["reqPerMin", "bytesStored"]),
+  hosting: Object.freeze(["bytesServed"]),
+  scheduler: Object.freeze(["runs"]),
+});
+
 const MAX_KEYS = new Set(["cpuPct", "memPct"]);
 
 // Time of the latest value for each MAX key.
@@ -149,32 +161,57 @@ function withLabel(seriesList, label, values) {
   return seriesList.filter((s) => values.includes(s.metric && s.metric.labels && s.metric.labels[label]));
 }
 
+// Count trend: null when the call failed, a flat zero line when it succeeded without points.
+function countTrend(seriesList, windowSeconds, nowMs, sinceMs) {
+  if (!seriesList) return null;
+  const points = trendOf([seriesList], sinceMs);
+  return points.length > 0 ? points : trendOrFlat([[]], windowSeconds, nowMs);
+}
+
+// Gauge trend: null when the call failed, [] when it succeeded without points.
+function gaugeTrend(seriesList, factor) {
+  if (!seriesList) return null;
+  return trendOf([seriesList]).map((p) => ({ t: p.t, v: p.v * factor }));
+}
+
 function function2Metrics(results, service, windowSeconds, nowMs) {
   const requests = seriesFor(results, "run.requests", service);
   let errPerMin = null;
+  let errors = null;
   if (requests) {
-    const errors = withLabel(requests, "response_code_class", ["4xx", "5xx"]);
+    errors = withLabel(requests, "response_code_class", ["4xx", "5xx"]);
     errPerMin = errors.length > 0 ? countPerMinute(errors, windowSeconds) : 0;
   }
-  const cpu = gauge(seriesFor(results, "run.cpu", service), 100);
-  const mem = gauge(seriesFor(results, "run.memory", service), 100);
+  const cpuSeries = seriesFor(results, "run.cpu", service);
+  const memSeries = seriesFor(results, "run.memory", service);
+  const instances = seriesFor(results, "run.instances", service);
+  const cpu = gauge(cpuSeries, 100);
+  const mem = gauge(memSeries, 100);
   return {
     metrics: {
       cpuPct: cpu.value,
       memPct: mem.value,
       reqPerMin: countPerMinute(requests, windowSeconds),
       errPerMin,
-      instances: latestCount(seriesFor(results, "run.instances", service)),
+      instances: latestCount(instances),
       cpuAt: cpu.at,
       memAt: mem.at,
     },
     points: trendOrFlat([requests], windowSeconds, nowMs),
+    trends: {
+      reqPerMin: countTrend(requests, windowSeconds, nowMs),
+      errPerMin: countTrend(errors, windowSeconds, nowMs),
+      cpuPct: gaugeTrend(cpuSeries, 100),
+      memPct: gaugeTrend(memSeries, 100),
+      instances: gaugeTrend(instances, 1),
+    },
   };
 }
 
 function function1Metrics(results, service, windowSeconds, nowMs) {
   const executions = seriesFor(results, "gen1.executions", service);
-  const mem = gauge(seriesFor(results, "gen1.memory", service), 1);
+  const memSeries = seriesFor(results, "gen1.memory", service);
+  const mem = gauge(memSeries, 1);
   return {
     metrics: {
       // 1st gen functions do not report CPU utilisation.
@@ -185,30 +222,45 @@ function function1Metrics(results, service, windowSeconds, nowMs) {
       memAt: mem.at,
     },
     points: trendOrFlat([executions], windowSeconds, nowMs),
+    trends: {
+      execPerMin: countTrend(executions, windowSeconds, nowMs),
+      memBytes: gaugeTrend(memSeries, 1),
+    },
   };
 }
 
 function firestoreMetrics(results, service, windowSeconds, nowMs) {
   const reads = seriesFor(results, "firestore.reads", service);
   const writes = seriesFor(results, "firestore.writes", service);
+  const deletes = seriesFor(results, "firestore.deletes", service);
   return {
     metrics: {
       readsPerMin: countPerMinute(reads, windowSeconds),
       writesPerMin: countPerMinute(writes, windowSeconds),
-      deletesPerMin: countPerMinute(seriesFor(results, "firestore.deletes", service), windowSeconds),
+      deletesPerMin: countPerMinute(deletes, windowSeconds),
     },
     points: trendOrFlat([reads, writes], windowSeconds, nowMs),
+    trends: {
+      readsPerMin: countTrend(reads, windowSeconds, nowMs),
+      writesPerMin: countTrend(writes, windowSeconds, nowMs),
+      deletesPerMin: countTrend(deletes, windowSeconds, nowMs),
+    },
   };
 }
 
 function bucketMetrics(results, service, windowSeconds, nowMs) {
   const requests = seriesFor(results, "bucket.requests", service);
+  const bytes = seriesFor(results, "bucket.bytes", service);
   return {
     metrics: {
       reqPerMin: countPerMinute(requests, windowSeconds),
-      bytesStored: latest(seriesFor(results, "bucket.bytes", service)),
+      bytesStored: latest(bytes),
     },
     points: trendOrFlat([requests], windowSeconds, nowMs),
+    trends: {
+      reqPerMin: countTrend(requests, windowSeconds, nowMs),
+      bytesStored: gaugeTrend(bytes, 1),
+    },
   };
 }
 
@@ -220,6 +272,7 @@ function hostingMetrics(results, service, windowSeconds, nowMs) {
       bytesServed: sent ? sumOf(sent) || 0 : null,
     },
     points: trendOrFlat([sent], windowSeconds, nowMs),
+    trends: { bytesServed: countTrend(sent, windowSeconds, nowMs) },
   };
 }
 
@@ -244,6 +297,7 @@ function schedulerMetrics(results, service, windowSeconds, nowMs) {
   return {
     metrics: { lastRunAt, lastResult },
     points: trendOf([runs], nowMs - windowSeconds * 1000),
+    trends: { runs: countTrend(runs, windowSeconds, nowMs, nowMs - windowSeconds * 1000) },
   };
 }
 
@@ -297,8 +351,8 @@ function buildPayload({ results, windowKey, nowMs }) {
   const windowSeconds = WINDOWS[windowName];
   const safeResults = results || {};
   const services = SERVICES.map((service) => {
-    const { metrics, points } = BUILDERS[service.kind](safeResults, service, windowSeconds, nowMs);
-    return { id: service.id, kind: service.kind, name: service.name, metrics, trend: { points } };
+    const { metrics, points, trends } = BUILDERS[service.kind](safeResults, service, windowSeconds, nowMs);
+    return { id: service.id, kind: service.kind, name: service.name, metrics, trend: { points }, trends };
   });
   return {
     generatedAt: new Date(nowMs).toISOString(),
@@ -309,4 +363,4 @@ function buildPayload({ results, windowKey, nowMs }) {
   };
 }
 
-module.exports = { METRIC_KEYS, buildPayload, buildTotals, totalFor };
+module.exports = { METRIC_KEYS, TREND_KEYS, buildPayload, buildTotals, totalFor, trendOf };

@@ -5,7 +5,7 @@ require("./no-network");
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { SERVICES, GEN1_MEMORY_BYTES } = require("../src/constants");
-const { buildPayload, METRIC_KEYS, totalFor } = require("../src/aggregate");
+const { buildPayload, METRIC_KEYS, TREND_KEYS, totalFor } = require("../src/aggregate");
 
 const NOW = Date.UTC(2026, 0, 1, 12, 0, 0);
 const MINUTE = 60000;
@@ -349,4 +349,128 @@ test("idle trend is a flat line, failed trend is empty", () => {
   }
   const failed = buildPayload({ results: { "run.requests": { ok: false } }, windowKey: "1h", nowMs: NOW });
   assert.deepEqual(find(failed, "function2:pyWeeklyAccounts").trend.points, []);
+});
+
+test("trends follow trend in the service object and use the kind's trend keys", () => {
+  const payload = buildPayload({ results: allEmpty(), windowKey: "1h", nowMs: NOW });
+  for (const s of payload.services) {
+    assert.deepEqual(Object.keys(s), ["id", "kind", "name", "metrics", "trend", "trends"], s.id);
+    assert.deepEqual(Object.keys(s.trends), [...TREND_KEYS[s.kind]], s.id);
+  }
+  assert.deepEqual(TREND_KEYS.firestore, ["readsPerMin", "writesPerMin", "deletesPerMin"]);
+  assert.deepEqual(TREND_KEYS.function2, ["reqPerMin", "errPerMin", "cpuPct", "memPct", "instances"]);
+});
+
+test("firestore reads, writes and deletes trends are separate", () => {
+  const db = { database_id: "yard" };
+  const results = {
+    "firestore.reads": ok(series(db, [10, 20])),
+    "firestore.writes": ok(series(db, [1, 2])),
+    "firestore.deletes": ok(series(db, [3])),
+  };
+  const s = find(buildPayload({ results, windowKey: "1h", nowMs: NOW }), "firestore:yard");
+  assert.deepEqual(s.trends.readsPerMin.map((p) => p.v), [20, 10]);
+  assert.deepEqual(s.trends.writesPerMin.map((p) => p.v), [2, 1]);
+  assert.deepEqual(s.trends.deletesPerMin, [{ t: new Date(NOW).toISOString(), v: 3 }]);
+  // The existing combined trend is unchanged.
+  assert.deepEqual(s.trend.points.map((p) => p.v), [22, 11]);
+});
+
+test("function2 trends: summed requests, errors, scaled CPU/RAM and instances", () => {
+  const sn = { service_name: "pymintoncrewclaim" };
+  const results = {
+    "run.cpu": ok(series(sn, [0.25, 0.5])),
+    "run.memory": ok(series(sn, [0.4])),
+    "run.requests": ok(
+      series(sn, [60, 50], { response_code_class: "2xx" }),
+      series(sn, [6], { response_code_class: "4xx" }),
+      series(sn, [0, 12], { response_code_class: "5xx" }),
+    ),
+    "run.instances": ok(series(sn, [3, 1])),
+  };
+  const t = find(buildPayload({ results, windowKey: "1h", nowMs: NOW }), "function2:pyMintOnCrewClaim").trends;
+  const at = (i) => new Date(NOW - i * MINUTE).toISOString();
+  assert.deepEqual(t.reqPerMin, [{ t: at(1), v: 62 }, { t: at(0), v: 66 }]);
+  assert.deepEqual(t.errPerMin, [{ t: at(1), v: 12 }, { t: at(0), v: 6 }]);
+  assert.deepEqual(t.cpuPct, [{ t: at(1), v: 50 }, { t: at(0), v: 25 }]);
+  assert.deepEqual(t.memPct, [{ t: at(0), v: 40 }]);
+  assert.deepEqual(t.instances, [{ t: at(1), v: 1 }, { t: at(0), v: 3 }]);
+});
+
+test("function1, bucket, hosting and scheduler trends", () => {
+  const results = {
+    "gen1.executions": ok(series({ function_name: "pyCleanupOnAuthDelete" }, [2])),
+    "gen1.memory": ok(series({ function_name: "pyCleanupOnAuthDelete" }, [1024])),
+    "bucket.requests": ok(series({ bucket_name: "mineral-proton-438104-g8-paraliyard" }, [5])),
+    "bucket.bytes": ok(series({ bucket_name: "mineral-proton-438104-g8-paraliyard" }, [4000, 3000], {}, 3600000)),
+    "hosting.sentBytes": ok(series({ domain_name: "paraliyard.web.app" }, [100, 200])),
+    "scheduler.runs": ok(
+      series(NIGHTLY, [1, 0], { response_code_class: "2xx" }, FIVE_MINUTES),
+      // A run 2 h ago is outside the 1h window and not part of the runs trend.
+      series(NIGHTLY, [0, 1], { response_code_class: "5xx" }, 2 * 3600000),
+    ),
+  };
+  const payload = buildPayload({ results, windowKey: "1h", nowMs: NOW });
+  const now = new Date(NOW).toISOString();
+  assert.deepEqual(find(payload, "function1:pyCleanupOnAuthDelete").trends, {
+    execPerMin: [{ t: now, v: 2 }],
+    memBytes: [{ t: now, v: 1024 }],
+  });
+  const bucket = find(payload, "bucket:mineral-proton-438104-g8-paraliyard").trends;
+  assert.deepEqual(bucket.reqPerMin, [{ t: now, v: 5 }]);
+  assert.deepEqual(bucket.bytesStored, [{ t: new Date(NOW - 3600000).toISOString(), v: 3000 }, { t: now, v: 4000 }]);
+  assert.deepEqual(find(payload, "hosting:paraliyard").trends.bytesServed.map((p) => p.v), [200, 100]);
+  assert.deepEqual(find(payload, "scheduler:pyNightlyExport").trends.runs, [
+    { t: new Date(NOW - FIVE_MINUTES).toISOString(), v: 0 },
+    { t: now, v: 1 },
+  ]);
+});
+
+test("failed calls give null trends", () => {
+  const failed = Object.fromEntries(ALL_KEYS.map((key) => [key, { ok: false }]));
+  for (const results of [{}, failed]) {
+    const payload = buildPayload({ results, windowKey: "1h", nowMs: NOW });
+    for (const s of payload.services) {
+      for (const [key, value] of Object.entries(s.trends)) assert.equal(value, null, `${s.id} ${key}`);
+    }
+  }
+});
+
+test("empty successful calls give flat 0 count trends and [] gauge trends", () => {
+  const payload = buildPayload({ results: allEmpty(), windowKey: "1h", nowMs: NOW });
+  const flat = [
+    { t: new Date(NOW - 3600000).toISOString(), v: 0 },
+    { t: new Date(NOW).toISOString(), v: 0 },
+  ];
+  const COUNT = new Set(["reqPerMin", "errPerMin", "execPerMin", "readsPerMin", "writesPerMin", "deletesPerMin", "bytesServed", "runs"]);
+  for (const s of payload.services) {
+    for (const [key, value] of Object.entries(s.trends)) {
+      assert.deepEqual(value, COUNT.has(key) ? flat : [], `${s.id} ${key}`);
+    }
+  }
+  const fn2 = find(payload, "function2:pyWeeklyAccounts").trends;
+  assert.deepEqual(fn2.cpuPct, []);
+  assert.deepEqual(fn2.memPct, []);
+});
+
+test("one refresh with trends still makes exactly 13 listTimeSeries calls", async () => {
+  const { createHandler } = require("../src/handler");
+  const { createFakeClient } = require("./fake-client");
+  const fake = createFakeClient();
+  const handler = createHandler({ getClient: () => fake.client, now: () => NOW, log: { warn() {}, error() {} } });
+  let body;
+  const res = { set: () => res, status: () => res, json: (value) => ((body = value), res) };
+  await handler({ method: "GET", path: "/api/metrics", query: {} }, res);
+  assert.equal(fake.calls.length, 13);
+  assert.deepEqual(fake.methods(), ["listTimeSeries"]);
+  for (const s of body.services) assert.deepEqual(Object.keys(s.trends), [...TREND_KEYS[s.kind]], s.id);
+});
+
+test("errors trend is a flat 0 line when requests succeeded without 4xx/5xx", () => {
+  const sn = { service_name: "pyweeklyaccounts" };
+  const results = { "run.requests": ok(series(sn, [10], { response_code_class: "2xx" })) };
+  const t = find(buildPayload({ results, windowKey: "1h", nowMs: NOW }), "function2:pyWeeklyAccounts").trends;
+  assert.deepEqual(t.reqPerMin, [{ t: new Date(NOW).toISOString(), v: 10 }]);
+  assert.deepEqual(t.errPerMin.map((p) => p.v), [0, 0]);
+  assert.equal(t.cpuPct, null);
 });

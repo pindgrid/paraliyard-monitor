@@ -4,6 +4,7 @@ const { CACHE_TTL_MS } = require("./constants");
 const { buildRequests, normalizeWindow } = require("./queries");
 const { buildPayload } = require("./aggregate");
 const { collect } = require("./collect");
+const { HISTORY_PATH, createHistoryRoute } = require("./history-handler");
 
 const CACHE_CONTROL = "public, max-age=30, s-maxage=60";
 const PATH = "/api/metrics";
@@ -16,6 +17,8 @@ function createHandler({ getClient, now = Date.now, log = console }) {
   const state = new Map();
   // Query keys already logged as NOT_FOUND by this instance (one info line each).
   const notFoundSeen = new Set();
+  // GET /api/history: its own allowlist, cache, single-flight and rate limit.
+  const history = createHistoryRoute({ getClient, now, log, notFoundSeen });
 
   function stateFor(windowKey) {
     if (!state.has(windowKey)) {
@@ -43,6 +46,10 @@ function createHandler({ getClient, now = Date.now, log = console }) {
     if (req.method !== "GET") {
       res.set("Allow", "GET");
       res.status(405).json({ error: "method not allowed" });
+      return;
+    }
+    if (req.path === HISTORY_PATH) {
+      await history(req, res);
       return;
     }
     if (req.path !== PATH) {

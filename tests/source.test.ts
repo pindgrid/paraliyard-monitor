@@ -50,6 +50,18 @@ describe("createMockSource", () => {
     await createMockSource().load();
     expect(sample.generatedAt).toBe("2026-01-01T12:00:00.000Z");
   });
+
+  it("moves the per-metric trends by the same offset and keeps null and [] trends", async () => {
+    const data = await createMockSource().load();
+    const firestore = data.services.find((s) => s.id === "firestore:yard");
+    const reads = firestore?.trends.readsPerMin ?? [];
+    expect(Date.parse(reads[reads.length - 1].t)).toBe(NOW);
+    expect(Date.parse(reads[0].t)).toBe(NOW - 50 * 60000);
+    const idle = data.services.find((s) => s.id === "function2:pyWeeklyAccounts");
+    expect(idle?.trends.cpuPct).toEqual([]);
+    const weekly = data.services.find((s) => s.id === "scheduler:pyWeeklyAccounts");
+    expect(weekly?.trends.runs).toBeNull();
+  });
 });
 
 describe("createLiveSource", () => {

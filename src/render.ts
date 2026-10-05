@@ -1,4 +1,5 @@
 import { NOT_AVAILABLE, NO_RUN, ageText, formatValue } from "./format";
+import { CELL_METRIC, METRIC_LABELS, PRIMARY_METRIC, historyPath, isAllowedPair } from "./routes";
 import { AGE_KEYS, COLUMNS, KIND_LABELS, KIND_ORDER, MAX_KEYS } from "./services";
 import { sparkline } from "./sparkline";
 import type { Kind, MetricRecord, MetricsResponse, ServiceInfo, ServiceMetrics } from "./types";
@@ -89,6 +90,18 @@ function metricCell(
   return valueCell(doc, key, metrics?.[key], options);
 }
 
+// Moves the cell's content into a link to the history view of an allowlisted
+// (service, metric). Text content and data-key stay the same.
+function linkToHistory(doc: Document, td: HTMLElement, serviceId: string, metric: string | null): void {
+  if (!metric || !isAllowedPair(serviceId, metric)) return;
+  const link = el(doc, "a");
+  link.setAttribute("href", historyPath(serviceId, metric));
+  link.dataset.history = "";
+  link.title = `Open ${METRIC_LABELS[metric] ?? metric} history`;
+  link.append(...td.childNodes);
+  td.appendChild(link);
+}
+
 function ageOf(metrics: MetricRecord | undefined, key: string, generatedAt: string | undefined): string | null {
   const atKey = AGE_KEYS[key];
   const at = atKey ? metrics?.[atKey] : undefined;
@@ -123,10 +136,13 @@ function renderKind(
     row.appendChild(el(doc, "th", service.name)).setAttribute("scope", "row");
     for (const column of columns) {
       const age = ageOf(data?.metrics, column.key, generatedAt);
-      row.appendChild(metricCell(doc, column.key, data?.metrics, { age }));
+      const td = metricCell(doc, column.key, data?.metrics, { age });
+      linkToHistory(doc, td, service.id, CELL_METRIC[kind][column.key] ?? null);
+      row.appendChild(td);
     }
     const trend = el(doc, "td", undefined, "trend");
     trend.appendChild(sparkline(data?.trend.points ?? [], doc));
+    linkToHistory(doc, trend, service.id, PRIMARY_METRIC[kind]);
     row.appendChild(trend);
     body.appendChild(row);
   }

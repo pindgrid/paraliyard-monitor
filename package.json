@@ -19,5 +19,9 @@
     "typescript-eslint": "^8.71.0",
     "vite": "^7.3.6",
     "vitest": "^3.2.7"
+  },
+  "dependencies": {
+    "chart.js": "^4.5.1",
+    "chartjs-plugin-zoom": "^2.2.0"
   }
 }

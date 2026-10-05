@@ -76,4 +76,4 @@ async function collect(client, requests, { log = silentLog, notFoundSeen = new S
   return results;
 }
 
-module.exports = { AllCallsFailedError, collect, callOptions };
+module.exports = { AllCallsFailedError, collect, callOptions, isNotFound, failureLine };
