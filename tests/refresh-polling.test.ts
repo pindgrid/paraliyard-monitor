@@ -36,13 +36,14 @@ function setVisibility(state: "visible" | "hidden") {
   document.dispatchEvent(new Event("visibilitychange"));
 }
 
-const select = () => root.querySelector<HTMLSelectElement>('select[data-action="refresh"]')!;
+const refreshButtons = () => [...root.querySelectorAll<HTMLButtonElement>(".seg button[data-refresh]")];
+// The data-refresh of the pressed button.
+const pressed = () => refreshButtons().find((b) => b.getAttribute("aria-pressed") === "true")?.dataset.refresh;
 const pauseButton = () => root.querySelector<HTMLButtonElement>('button[data-action="pause"]')!;
 const liveState = () => root.querySelector<HTMLElement>("[data-live]")?.dataset.state;
 
 function choose(seconds: number) {
-  select().value = String(seconds);
-  select().dispatchEvent(new Event("change", { bubbles: true }));
+  root.querySelector<HTMLButtonElement>(`button[data-refresh="${seconds}"]`)!.click();
 }
 
 const live: Config = { mode: "live", refreshSeconds: 60 };
@@ -69,9 +70,36 @@ afterEach(() => {
 });
 
 describe("refresh control", () => {
-  it("offers exactly 30s, 60s and 5m", async () => {
+  it("offers exactly 30s, 60s and 5m as a segmented group, with no <select>", async () => {
     app = await startApp({ root, fetchFn: stubFetch().fetchFn, config: live, storage: null });
-    expect([...select().options].map((o) => o.textContent)).toEqual(["30s", "60s", "5m"]);
+    expect(root.querySelector("select")).toBeNull();
+    const group = root.querySelector<HTMLElement>('.seg[role="group"][aria-label="Refresh every"]')!;
+    expect(group).not.toBeNull();
+    expect(refreshButtons().map((b) => [b.dataset.refresh, b.textContent, b.type])).toEqual([
+      ["30", "30s", "button"],
+      ["60", "60s", "button"],
+      ["300", "5m", "button"],
+    ]);
+    expect(refreshButtons().every((b) => group.contains(b))).toBe(true);
+    // aria-pressed follows the current choice.
+    expect(refreshButtons().map((b) => b.getAttribute("aria-pressed"))).toEqual(["false", "true", "false"]);
+    choose(30);
+    expect(refreshButtons().map((b) => b.getAttribute("aria-pressed"))).toEqual(["true", "false", "false"]);
+  });
+
+  it("a tampered data-refresh under 30 s is ignored", async () => {
+    const { fetchFn, calls } = stubFetch();
+    app = await startApp({ root, fetchFn, config: live });
+    await vi.advanceTimersByTimeAsync(0);
+    const button = root.querySelector<HTMLButtonElement>('button[data-refresh="30"]')!;
+    button.dataset.refresh = "5";
+    button.click();
+    expect(window.localStorage.getItem(REFRESH_KEY)).toBeNull();
+    expect(pressed()).toBe("60");
+    await vi.advanceTimersByTimeAsync(5 * MINUTE);
+    const gaps = gapsOf(metricsTimes(calls));
+    expect(gaps.length).toBeGreaterThan(2);
+    expect(gaps.every((g) => g === 60 * SECOND)).toBe(true);
   });
 
   it("never fetches more often than every 30 s, for every option", async () => {
@@ -113,7 +141,7 @@ describe("refresh control", () => {
     app.stop();
     const { fetchFn, calls } = stubFetch();
     app = await startApp({ root, fetchFn, config: live });
-    expect(select().value).toBe("300");
+    expect(pressed()).toBe("300");
     await vi.advanceTimersByTimeAsync(11 * MINUTE);
     expect(metricsTimes(calls)).toEqual([0, 300, 600].map((s) => metricsTimes(calls)[0] + s * SECOND));
   });
@@ -129,7 +157,7 @@ describe("refresh control", () => {
     };
     const { fetchFn, calls } = stubFetch();
     app = await startApp({ root, fetchFn, config: live, storage: throwing });
-    expect(select().value).toBe("60");
+    expect(pressed()).toBe("60");
     expect(() => choose(30)).not.toThrow();
     await vi.advanceTimersByTimeAsync(5 * MINUTE);
     expect(gapsOf(metricsTimes(calls)).slice(1).every((g) => g === 30 * SECOND)).toBe(true);
@@ -141,7 +169,7 @@ describe("refresh control", () => {
     });
     app = await startApp({ root, fetchFn: stubFetch().fetchFn, config: live });
     expect(() => choose(300)).not.toThrow();
-    expect(select().value).toBe("300");
+    expect(pressed()).toBe("300");
   });
 });
 
@@ -197,8 +225,13 @@ describe("polling", () => {
   it("off mode makes zero fetches and disables the controls", async () => {
     const { fetchFn, calls } = stubFetch();
     app = await startApp({ root, fetchFn, config: { mode: "off", refreshSeconds: 60 } });
-    expect(select().disabled).toBe(true);
+    expect(refreshButtons()).toHaveLength(3);
+    expect(refreshButtons().every((b) => b.disabled)).toBe(true);
     expect(pauseButton().disabled).toBe(true);
+    // A click on a disabled button changes nothing.
+    choose(30);
+    expect(window.localStorage.getItem(REFRESH_KEY)).toBeNull();
+    expect(pressed()).toBe("60");
     await vi.advanceTimersByTimeAsync(60 * MINUTE);
     expect(calls).toHaveLength(0);
   });

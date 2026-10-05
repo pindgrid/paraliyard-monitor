@@ -13,9 +13,12 @@ const WEEKLY = JOB_SCHEDULES["scheduler:pyWeeklyAccounts"].cron;
 describe("JOB_SCHEDULES", () => {
   it("copies the CSV values in Asia/Kolkata", () => {
     expect(JOB_SCHEDULES).toEqual({
-      "scheduler:pyNightlyExport": { cron: "30 2 * * *", timeZone: "Asia/Kolkata", schedule: "Daily 02:30 IST" },
-      "scheduler:pyWeeklyAccounts": { cron: "0 3 * * 0", timeZone: "Asia/Kolkata", schedule: "Sundays 03:00 IST" },
+      "scheduler:pyNightlyExport": { cron: "30 2 * * *", timeZone: "Asia/Kolkata", schedule: "Every day, 2:30 am" },
+      "scheduler:pyWeeklyAccounts": { cron: "0 3 * * 0", timeZone: "Asia/Kolkata", schedule: "Sundays, 3:00 am" },
     });
+    // Only the display text changed: the cron strings stay the same.
+    expect(DAILY).toBe("30 2 * * *");
+    expect(WEEKLY).toBe("0 3 * * 0");
   });
 });
 

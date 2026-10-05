@@ -1,5 +1,5 @@
 import { loadConfig } from "./config";
-import { renderDashboard, type LiveState } from "./dashboard";
+import { destroyDashboard, renderDashboard, type LiveState } from "./dashboard";
 import { bindOpeners, createDrawer } from "./drawer";
 import { groupFor } from "./drawer-groups";
 import { drawerPath, isHistoryPath, parseDrawerRoute } from "./drawer-route";
@@ -170,13 +170,15 @@ export async function startApp({ root, fetchFn = fetch, doc = document, config, 
     render();
   }
 
-  function onChange(event: Event) {
-    const select = (event.target as Element | null)?.closest?.('select[data-action="refresh"]') as HTMLSelectElement | null;
-    if (select) setRefresh(Number(select.value));
-  }
-
   function onClick(event: MouseEvent) {
-    if ((event.target as Element | null)?.closest?.('button[data-action="pause"]')) setPaused(!paused);
+    const target = event.target as Element | null;
+    if (target?.closest?.('button[data-action="pause"]')) {
+      setPaused(!paused);
+      return;
+    }
+    // setRefresh only accepts 30, 60 or 300, so a tampered value is ignored.
+    const refresh = target?.closest?.("button[data-refresh]") as HTMLButtonElement | null;
+    if (refresh && !refresh.disabled) setRefresh(Number(refresh.dataset.refresh));
   }
 
   // Shows whatever the URL names: a drawer over the page, or the page alone.
@@ -220,7 +222,6 @@ export async function startApp({ root, fetchFn = fetch, doc = document, config, 
   }
 
   const unbindOpeners = bindOpeners(root, (opener) => openFromPage(opener));
-  root.addEventListener("change", onChange);
   root.addEventListener("click", onClick);
   win.addEventListener("popstate", onPopState);
 
@@ -230,10 +231,10 @@ export async function startApp({ root, fetchFn = fetch, doc = document, config, 
     poller?.stop();
     configPoller?.stop();
     unbindOpeners();
-    root.removeEventListener("change", onChange);
     root.removeEventListener("click", onClick);
     win.removeEventListener("popstate", onPopState);
     drawer.destroy();
+    destroyDashboard(root);
   }
 
   render();

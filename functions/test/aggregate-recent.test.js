@@ -168,12 +168,12 @@ test("scheduler services carry schedule, cron, timeZone and the next run", () =>
   const payload = buildPayload({ results: allEmpty(), windowKey: "1h", nowMs: NOW });
   // NOW is Thursday 2026-01-01 17:30 IST.
   const nightly = find(payload, "scheduler:pyNightlyExport");
-  assert.equal(nightly.schedule, "Daily 02:30 IST");
+  assert.equal(nightly.schedule, "Every day, 2:30 am");
   assert.equal(nightly.cron, "30 2 * * *");
   assert.equal(nightly.timeZone, "Asia/Kolkata");
   assert.equal(nightly.nextRun, "2026-01-01T21:00:00.000Z");
   const weekly = find(payload, "scheduler:pyWeeklyAccounts");
-  assert.equal(weekly.schedule, "Sundays 03:00 IST");
+  assert.equal(weekly.schedule, "Sundays, 3:00 am");
   assert.equal(weekly.cron, "0 3 * * 0");
   assert.equal(weekly.timeZone, "Asia/Kolkata");
   assert.equal(weekly.nextRun, "2026-01-03T21:30:00.000Z");

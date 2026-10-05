@@ -44,6 +44,21 @@ describe("styles.css", () => {
     expect(css).toMatch(/@media \(prefers-reduced-motion: reduce\)/);
   });
 
+  it("sizes the hero's left column to the big number, with a clamp()ed font and a single column at 780px", () => {
+    const hero = css.match(/(?:^|\n)\.hero\s*\{([^}]*)\}/)?.[1] ?? "";
+    const columns = hero.match(/grid-template-columns:\s*([^;]+);/)?.[1] ?? "";
+    expect(columns).toMatch(/^minmax\(\d+px,\s*max-content\)\s+1fr$/);
+    const bignum = css.match(/\.bignum\s*\{([^}]*)\}/)?.[1] ?? "";
+    expect(bignum).toMatch(/font-size:\s*clamp\(/);
+    expect(css).toMatch(/@media \(max-width: 780px\) \{ \.hero \{ grid-template-columns: 1fr;/);
+  });
+
+  it("has no CSS for the removed SVG charts, select, inline legend or drawer legend buttons", () => {
+    for (const selector of [".spark", ".bars", ".legend-inline", ".refresh select", ".dlegend"]) {
+      expect(css, selector).not.toContain(selector);
+    }
+  });
+
   it("uses the bundled Archivo Variable family and no remote URLs", () => {
     expect(css).toMatch(/--font:\s*"Archivo Variable", "Archivo", "Helvetica Neue", Arial, sans-serif;/);
     expect(css).not.toMatch(/https?:\/\//);

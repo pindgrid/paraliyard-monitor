@@ -6,17 +6,23 @@ import {
   CategoryScale,
   Chart,
   Filler,
+  Legend,
   LinearScale,
   LineController,
   LineElement,
   PointElement,
   Tooltip,
   type ChartConfiguration,
+  type ChartEvent,
+  type LegendElement,
+  type LegendItem,
   type TooltipItem,
 } from "chart.js";
 import type { Formatter } from "./fmt";
+import { alpha, applyTheme, INK_2, INK_3, RULE, tooltipStyle } from "./page-chart-config";
 
-Chart.register(LineController, BarController, LineElement, BarElement, PointElement, LinearScale, CategoryScale, Tooltip, Filler);
+Chart.register(LineController, BarController, LineElement, BarElement, PointElement, LinearScale, CategoryScale, Tooltip, Legend, Filler);
+applyTheme(Chart.defaults);
 
 export interface XYPoint {
   x: number;
@@ -46,13 +52,17 @@ export interface DrawerChartSpec {
   kind: "line" | "bar";
   datasets: DrawerChartDataset[];
   axes: { y: DrawerAxis; y1?: DrawerAxis };
-  // Line charts: the x range (epoch ms) and how to label times.
+  // Line charts: the x range (epoch ms) and how to label times (tooltip
+  // titles; axis ticks use formatTick when given).
   from?: number;
   to?: number;
   formatX: (ms: number) => string;
+  formatTick?: (ms: number) => string;
   // Bar charts: one label per bar.
   labels?: string[];
   formats: Formatter[];
+  // A legend click hid or showed a line chart's dataset.
+  onLegendToggle?: (index: number, visible: boolean) => void;
 }
 
 export interface DrawerChart {
@@ -63,17 +73,18 @@ export interface DrawerChart {
 
 export type DrawerChartFactory = (canvas: HTMLCanvasElement, spec: DrawerChartSpec) => DrawerChart;
 
-const INK = "#1F2A1E";
-const SURFACE = "#F6F7F1";
-const RULE = "#D0D6C4";
-const INK_3 = "#848D79";
-
-function alpha(hex: string, a: number): string {
-  const n = parseInt(hex.slice(1), 16);
-  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
+// Legend click: Chart.js's own toggle, then the new visibility is reported
+// so the drawer can mute that row of the stats table.
+function legendClick(spec: DrawerChartSpec) {
+  return function (this: LegendElement<"line">, event: ChartEvent, item: LegendItem, legend: LegendElement<"line">) {
+    Chart.defaults.plugins.legend.onClick.call(legend, event, item, legend);
+    const index = item.datasetIndex;
+    if (typeof index === "number") spec.onLegendToggle?.(index, legend.chart.isDatasetVisible(index));
+  };
 }
 
-function config(spec: DrawerChartSpec): ChartConfiguration {
+// The drawer chart's Chart.js config (pure; tests call it directly).
+export function drawerConfig(spec: DrawerChartSpec): ChartConfiguration {
   const hasY1 = spec.datasets.some((d) => d.axis === "y1") && Boolean(spec.axes.y1);
   const line = spec.kind === "line";
   return {
@@ -106,7 +117,7 @@ function config(spec: DrawerChartSpec): ChartConfiguration {
       interaction: { mode: "index", intersect: false },
       scales: {
         x: line
-          ? { type: "linear", min: spec.from, max: spec.to, grid: { display: false }, ticks: { color: INK_3, maxTicksLimit: 7, maxRotation: 0, callback: (v) => spec.formatX(Number(v)) } }
+          ? { type: "linear", min: spec.from, max: spec.to, grid: { display: false }, ticks: { color: INK_3, maxTicksLimit: 7, maxRotation: 0, callback: (v) => (spec.formatTick ?? spec.formatX)(Number(v)) } }
           : { type: "category", grid: { display: false }, ticks: { color: INK_3, maxTicksLimit: 10, maxRotation: 0 } },
         y: {
           beginAtZero: !spec.axes.y.level,
@@ -126,14 +137,17 @@ function config(spec: DrawerChartSpec): ChartConfiguration {
         },
       },
       plugins: {
-        // The drawer draws its own legend (buttons that also update the stats table).
-        legend: { display: false },
+        // Line charts: the Chart.js legend hides or shows a line. Run bars have none.
+        legend: line
+          ? {
+              display: true,
+              position: "bottom",
+              labels: { usePointStyle: true, pointStyle: "line", boxWidth: 22, color: INK_2 },
+              onClick: legendClick(spec),
+            }
+          : { display: false },
         tooltip: {
-          backgroundColor: INK,
-          titleColor: SURFACE,
-          bodyColor: SURFACE,
-          padding: 10,
-          cornerRadius: 6,
+          ...tooltipStyle(),
           callbacks: {
             title: (items: TooltipItem<"line" | "bar">[]) => {
               const item = items[0];
@@ -155,7 +169,7 @@ function config(spec: DrawerChartSpec): ChartConfiguration {
 export function createDrawerChart(canvas: HTMLCanvasElement, spec: DrawerChartSpec): DrawerChart {
   // Without a 2D context the chart is skipped; the stats table still works.
   if (!canvas.getContext("2d")) return { setVisible() {}, setData() {}, destroy() {} };
-  const chart = new Chart(canvas, config(spec));
+  const chart = new Chart(canvas, drawerConfig(spec));
   return {
     setVisible(index, visible) {
       chart.setDatasetVisibility(index, visible);

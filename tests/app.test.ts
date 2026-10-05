@@ -1,6 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import sample from "../src/mock/sample-metrics.json";
 import { startApp, type AppHandle } from "../src/app";
+import { createPageCharts } from "../src/page-charts";
 import type { Config } from "../src/types";
 
 const SECOND = 1000;
@@ -140,7 +141,7 @@ describe("live mode", () => {
     app = await startApp({ root, fetchFn, config: { mode: "live", refreshSeconds: 300 } });
     await vi.advanceTimersByTimeAsync(6 * REFRESH);
     expect(metricsCalls(calls)).toHaveLength(2);
-    expect(root.querySelector<HTMLSelectElement>('select[data-action="refresh"]')?.value).toBe("300");
+    expect(root.querySelector('button[data-refresh="300"]')?.getAttribute("aria-pressed")).toBe("true");
     app.stop();
 
     const second = stubFetch({ metrics: () => fakeResponse(sample) });
@@ -235,6 +236,22 @@ describe("live mode", () => {
     expect(calls).toHaveLength(total);
     expect(metricsCalls(calls)).toHaveLength(metricsSoFar);
     expect(root.textContent).toContain("Live monitoring is paused");
+  });
+
+  it("creates the page charts once, never in off mode, and stop() destroys them", async () => {
+    vi.mocked(createPageCharts).mockClear();
+    app = await startApp({ root, fetchFn: stubFetch({}).fetchFn, config: { mode: "off", refreshSeconds: 60 } });
+    expect(createPageCharts).not.toHaveBeenCalled();
+    app.stop();
+
+    const { fetchFn } = stubFetch({ metrics: () => fakeResponse(sample) });
+    app = await startApp({ root, fetchFn, config: live });
+    await vi.advanceTimersByTimeAsync(3 * REFRESH);
+    expect(createPageCharts).toHaveBeenCalledTimes(1);
+    const page = vi.mocked(createPageCharts).mock.results[0].value as { hero: Mock; destroy: Mock };
+    expect(page.hero.mock.calls.length).toBeGreaterThanOrEqual(4);
+    app.stop();
+    expect(page.destroy).toHaveBeenCalledTimes(1);
   });
 
   it("stop() ends all polling", async () => {

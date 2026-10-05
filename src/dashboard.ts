@@ -1,6 +1,6 @@
 import { daySquares } from "./day-squares";
 import { BUCKET_COLORS, SITE_COLORS } from "./drawer-groups";
-import { DASH, escapeHtml as esc, fmt, istDateTime, istTime, shortBucket, untilText } from "./fmt";
+import { DASH, escapeHtml as esc, fmt, istDateTime, istDayTime, istTime, shortBucket, untilText } from "./fmt";
 import { cpuMeter, instancesText, ramMeter, NOT_REPORTED, type MeterState } from "./meters";
 import {
   activityCells,
@@ -13,6 +13,7 @@ import {
   sumOf,
   type Series,
 } from "./recent";
+import { createPageCharts, type PageCharts } from "./page-charts";
 import { REFRESH_OPTIONS } from "./refresh";
 import { nextRunAt } from "./schedule";
 import { JOB_SCHEDULES, PROJECT_ID } from "./services";
@@ -42,7 +43,9 @@ export interface DashboardStatus {
 export const OPENER_ATTRS = 'role="button" tabindex="0"';
 
 function shell(): string {
-  const options = REFRESH_OPTIONS.map((o) => `<option value="${o.seconds}">${o.label}</option>`).join("");
+  const options = REFRESH_OPTIONS.map(
+    (o) => `<button type="button" data-refresh="${o.seconds}" aria-pressed="false">${o.label}</button>`,
+  ).join("");
   return `
 <div class="wrap" data-dashboard>
   <header class="top">
@@ -54,7 +57,7 @@ function shell(): string {
     <div class="controls">
       <span class="live" data-live><i></i><span data-live-text>Live</span></span>
       <span>Updated <time data-updated>${DASH}</time></span>
-      <label class="refresh">Refresh <select data-action="refresh" aria-label="Refresh every">${options}</select></label>
+      <div class="seg" role="group" aria-label="Refresh every">${options}</div>
       <button class="btn" type="button" data-action="pause" aria-pressed="false">Pause</button>
     </div>
   </header>
@@ -69,44 +72,9 @@ const ofKind = (data: MetricsResponse, kinds: readonly ServiceInfo["kind"][]) =>
 
 // ---------- Hero ----------
 
-const W = 600;
-const H = 220;
-
-function pathOf(values: Series, max: number): string {
-  if (!values || values.length === 0) return "";
-  const n = values.length;
-  return values
-    .map((v, i) => {
-      const x = n === 1 ? 0 : (i / (n - 1)) * W;
-      const y = H - ((typeof v === "number" ? v : 0) / (max || 1)) * (H - 10);
-      return `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
-    })
-    .join(" ");
-}
-
-function heroChart(fs: ServiceMetrics | undefined): string {
-  const reads = recentSeries(fs, "readsPerMin");
-  const writes = recentSeries(fs, "writesPerMin");
-  const deletes = recentSeries(fs, "deletesPerMin");
-  const readsMax = Math.max(1, peakOf(reads) ?? 0);
-  const rightMax = Math.max(4, peakOf(writes) ?? 0, peakOf(deletes) ?? 0);
-  const readsPath = pathOf(reads, readsMax);
-  const area = readsPath ? `${readsPath} L${W},${H} L0,${H} Z` : "";
-  return `
-<svg class="spark" viewBox="0 0 ${W} ${H + 20}" preserveAspectRatio="none" role="img" aria-label="Reads, writes and deletes per minute, last 30 minutes">
-  <line class="grid" x1="0" y1="${H}" x2="${W}" y2="${H}"></line>
-  <line class="grid" x1="0" y1="10" x2="${W}" y2="10"></line>
-  <path class="reads-area" d="${area}"></path>
-  <path class="reads" d="${readsPath}"></path>
-  <path class="writes" d="${pathOf(writes, rightMax)}"></path>
-  <path class="deletes" d="${pathOf(deletes, rightMax)}"></path>
-  <text x="2" y="${H + 16}">30 min ago</text>
-  <text x="${W - 2}" y="${H + 16}" text-anchor="end">now</text>
-  <text x="2" y="22">${fmt.rate(readsMax)} reads/min</text>
-  <text x="${W - 2}" y="22" text-anchor="end">${fmt.rate(rightMax)} writes, deletes</text>
-</svg>
-<div class="legend-inline"><span style="--c:var(--straw)">Reads/min</span><span style="--c:var(--paddy)">Writes/min</span><span style="--c:var(--ember)">Deletes/min</span></div>`;
-}
+// The hero and hosting charts are Chart.js canvases (src/page-charts.ts).
+// Their containers are kept across refreshes, so each chart is made once.
+const CHART_CONTAINERS = [".hero-chart", ".host-chart"] as const;
 
 function hero(data: MetricsResponse): string {
   const fs = data.services.find((s) => s.kind === "firestore");
@@ -125,9 +93,9 @@ function hero(data: MetricsResponse): string {
       <div><dt>Deletes/min</dt><dd data-hero="deletes">${fmt.int(latestValue(recentSeries(fs, "deletesPerMin")))}</dd></div>
       <div><dt>Peak, 30 min</dt><dd data-hero="peak">${fmt.rate(peakOf(reads))}</dd></div>
     </dl>
-    <p class="hint">Last 30 minutes, updating live. Click the chart or any row below to see its full history.</p>
+    <p class="hint">Last 30 minutes, updating live. Times in IST. Click the chart or any row below to see its full history.</p>
   </div>
-  <div class="hero-chart" data-open="fs" ${OPENER_ATTRS} aria-label="Open Firestore history">${heroChart(fs)}</div>
+  <div class="hero-chart" data-open="fs" ${OPENER_ATTRS} aria-label="Open Firestore history"><canvas role="img" aria-label="Reads, writes and deletes per minute, last 30 minutes"></canvas></div>
 </section>`;
 }
 
@@ -254,32 +222,6 @@ function functionsTable(data: MetricsResponse): string {
 
 // ---------- Storage and hosting ----------
 
-function hostingBars(sites: ServiceMetrics[]): string {
-  const series = sites.map((s) => recentSeries(s, "bytesServed"));
-  const totals = addSeries(series);
-  const max = Math.max(1, peakOf(totals) ?? 0);
-  const n = 30;
-  const bw = W / n;
-  const bars: string[] = [];
-  for (let i = 0; i < n; i += 1) {
-    let y = H;
-    series.forEach((values, k) => {
-      const v = values && typeof values[i] === "number" ? (values[i] as number) : 0;
-      if (v <= 0) return;
-      const h = (v / max) * (H - 10);
-      y -= h;
-      bars.push(`<rect x="${(i * bw + 1).toFixed(1)}" y="${y.toFixed(1)}" width="${(bw - 2).toFixed(1)}" height="${h.toFixed(1)}" style="fill:var(${SITE_COLORS[k % SITE_COLORS.length]})"></rect>`);
-    });
-  }
-  return `
-<svg class="bars" viewBox="0 0 ${W} ${H + 20}" preserveAspectRatio="none" role="img" aria-label="Bytes served per minute, last 30 minutes">
-  ${bars.join("")}
-  <text x="2" y="${H + 16}">30 min ago</text>
-  <text x="${W - 2}" y="${H + 16}" text-anchor="end">now</text>
-  <text x="2" y="12">${fmt.bytes(max)}/min</text>
-</svg>`;
-}
-
 function storageAndHosting(data: MetricsResponse): string {
   const buckets = ofKind(data, ["bucket"]);
   const sizes = buckets.map((b) => (typeof b.metrics.bytesStored === "number" ? b.metrics.bytesStored : 0));
@@ -307,7 +249,7 @@ function storageAndHosting(data: MetricsResponse): string {
   </section>
   <section class="block" aria-labelledby="hoTitle" data-section="hosting">
     <div class="block-head"><h2 id="hoTitle">Firebase Hosting</h2><p>Bytes served per minute</p></div>
-    <div class="host-chart" data-open="host" ${OPENER_ATTRS} aria-label="Open hosting history">${hostingBars(sites)}</div>
+    <div class="host-chart" data-open="host" ${OPENER_ATTRS} aria-label="Open hosting history"><canvas role="img" aria-label="Bytes served per minute, last 30 minutes"></canvas></div>
     <div class="sites">${sites
       .map((h, i) => {
         const served = recentSeries(h, "bytesServed");
@@ -352,14 +294,14 @@ function jobRow(s: ServiceMetrics, status: DashboardStatus): string {
   <span><span class="name">${esc(s.name)}</span><span class="meta">${esc(schedule)}</span></span>
   <span><span class="meta">Last run</span><span class="last">${lastRun(s)}</span></span>
   <span><span class="days" aria-label="Last 14 days">${squares}</span><span class="days-axis"><span>14 days ago</span><span>Today</span></span></span>
-  <span class="next"><span class="meta">Next run</span><strong>${at === null ? DASH : `in ${untilText(at - status.nowMs)}`}</strong><span class="meta">${at === null ? "" : esc(istDateTime(at))}</span></span>
+  <span class="next"><span class="meta">Next run</span><strong>${at === null ? DASH : `in ${untilText(at - status.nowMs)}`}</strong><span class="meta">${at === null ? "" : esc(istDayTime(at))}</span></span>
 </div>`;
 }
 
 function jobs(data: MetricsResponse, status: DashboardStatus): string {
   return `
 <section class="block" aria-labelledby="jobTitle" data-section="jobs">
-  <div class="block-head"><h2 id="jobTitle">Cloud Scheduler jobs</h2><p>Each square is one day in IST; green ran successfully, red failed.</p></div>
+  <div class="block-head"><h2 id="jobTitle">Cloud Scheduler jobs</h2><p>Each square is one day; green ran successfully, red failed.</p></div>
   ${ofKind(data, ["scheduler"])
     .map((s) => jobRow(s, status))
     .join("")}
@@ -380,9 +322,10 @@ function updateHeader(root: HTMLElement, data: MetricsResponse | null, status: D
   const time = root.querySelector<HTMLTimeElement>("[data-updated]")!;
   time.textContent = Number.isFinite(generated) ? istTime(generated) : DASH;
   if (Number.isFinite(generated)) time.dateTime = new Date(generated).toISOString();
-  const select = root.querySelector<HTMLSelectElement>('select[data-action="refresh"]')!;
-  select.value = String(status.refreshSeconds);
-  select.disabled = Boolean(status.off);
+  for (const button of root.querySelectorAll<HTMLButtonElement>("button[data-refresh]")) {
+    button.setAttribute("aria-pressed", String(Number(button.dataset.refresh) === status.refreshSeconds));
+    button.disabled = Boolean(status.off);
+  }
   const pause = root.querySelector<HTMLButtonElement>('button[data-action="pause"]')!;
   pause.textContent = status.paused ? "Resume" : "Pause";
   pause.setAttribute("aria-pressed", String(status.paused));
@@ -408,8 +351,32 @@ function updateHeader(root: HTMLElement, data: MetricsResponse | null, status: D
   error.hidden = !offline;
 }
 
+// One pair of page charts per dashboard root.
+const pageCharts = new WeakMap<HTMLElement, PageCharts>();
+
+// Destroys the page charts of root (the app calls this when it stops).
+export function destroyDashboard(root: HTMLElement): void {
+  pageCharts.get(root)?.destroy();
+  pageCharts.delete(root);
+}
+
+function updateCharts(root: HTMLElement, sections: HTMLElement, data: MetricsResponse, nowMs: number): void {
+  let charts = pageCharts.get(root);
+  if (!charts) {
+    charts = createPageCharts();
+    pageCharts.set(root, charts);
+  }
+  const generated = Date.parse(data.generatedAt);
+  const at = Number.isFinite(generated) ? generated : nowMs;
+  const heroCanvas = sections.querySelector<HTMLCanvasElement>(".hero-chart canvas");
+  const hostCanvas = sections.querySelector<HTMLCanvasElement>(".host-chart canvas");
+  if (heroCanvas) charts.hero(heroCanvas, data.services.find((s) => s.kind === "firestore"), at);
+  if (hostCanvas) charts.host(hostCanvas, ofKind(data, ["hosting"]), at);
+}
+
 // Renders (or updates) the page in root. Header controls are built once so
 // they keep focus; sections are redrawn and a focused opener keeps focus.
+// The chart containers (with their canvases) are moved into the new markup.
 export function renderDashboard(root: HTMLElement, data: MetricsResponse | null, status: DashboardStatus): void {
   if (!root.querySelector("[data-dashboard]")) root.innerHTML = shell();
   updateHeader(root, data, status);
@@ -418,11 +385,18 @@ export function renderDashboard(root: HTMLElement, data: MetricsResponse | null,
   const active = doc.activeElement;
   const focusedOpener = active && sections.contains(active) ? active.getAttribute("data-open") : null;
   const focusedLabel = active?.getAttribute("aria-label") ?? null;
-  if (!data) {
+  if (!data || status.off) {
+    destroyDashboard(root);
     sections.innerHTML = status.off ? "" : '<p class="hint" data-loading>Loading metrics…</p>';
     return;
   }
+  const kept = CHART_CONTAINERS.map((selector) => sections.querySelector<HTMLElement>(selector));
   sections.innerHTML = [hero(data), strip(data, status.nowMs), functionsTable(data), storageAndHosting(data), jobs(data, status)].join("");
+  CHART_CONTAINERS.forEach((selector, i) => {
+    const old = kept[i];
+    if (old) sections.querySelector(selector)?.replaceWith(old);
+  });
+  updateCharts(root, sections, data, status.nowMs);
   if (focusedOpener) {
     const candidates = [...sections.querySelectorAll<HTMLElement>("[data-open]")].filter((el) => el.dataset.open === focusedOpener);
     (candidates.find((el) => el.getAttribute("aria-label") === focusedLabel) ?? candidates[0])?.focus();

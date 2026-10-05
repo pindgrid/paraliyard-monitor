@@ -121,8 +121,8 @@ const JOB_TIME_ZONE = "Asia/Kolkata";
 
 // Cloud Scheduler cron per job, copied from data/paraliyard-services.csv.
 const JOB_SCHEDULES = Object.freeze({
-  "scheduler:pyNightlyExport": Object.freeze({ cron: "30 2 * * *", timeZone: JOB_TIME_ZONE, schedule: "Daily 02:30 IST" }),
-  "scheduler:pyWeeklyAccounts": Object.freeze({ cron: "0 3 * * 0", timeZone: JOB_TIME_ZONE, schedule: "Sundays 03:00 IST" }),
+  "scheduler:pyNightlyExport": Object.freeze({ cron: "30 2 * * *", timeZone: JOB_TIME_ZONE, schedule: "Every day, 2:30 am" }),
+  "scheduler:pyWeeklyAccounts": Object.freeze({ cron: "0 3 * * 0", timeZone: JOB_TIME_ZONE, schedule: "Sundays, 3:00 am" }),
 });
 
 module.exports = {

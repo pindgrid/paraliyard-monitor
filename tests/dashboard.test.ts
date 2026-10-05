@@ -1,5 +1,7 @@
-import { beforeEach, describe, expect, it } from "vitest";
-import { renderDashboard, type DashboardStatus } from "../src/dashboard";
+import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
+import { destroyDashboard, renderDashboard, type DashboardStatus } from "../src/dashboard";
+import { bindOpeners } from "../src/drawer";
+import { createPageCharts } from "../src/page-charts";
 import { createMockSource } from "../src/source";
 import type { HistoryPoint, MetricsResponse, ServiceMetrics } from "../src/types";
 
@@ -24,6 +26,7 @@ function row(id: string): HTMLElement {
 const text = (el: Element | null | undefined) => (el?.textContent ?? "").replace(/\s+/g, " ").trim();
 
 beforeEach(async () => {
+  vi.mocked(createPageCharts).mockClear();
   document.body.replaceChildren();
   root = document.createElement("main");
   document.body.appendChild(root);
@@ -39,14 +42,16 @@ describe("renderDashboard sections (mock fixture)", () => {
     expect(header.querySelector(".gur")?.getAttribute("lang")).toBe("pa");
     expect(text(header.querySelector(".proj"))).toBe("mineral-proton-438104-g8");
     expect(text(header.querySelector("[data-live]"))).toBe("Live");
-    expect(text(header)).toContain("Updated 14:00:00 IST");
-    const options = [...header.querySelectorAll<HTMLOptionElement>('select[data-action="refresh"] option')];
-    expect(options.map((o) => [o.value, o.textContent])).toEqual([
-      ["30", "30s"],
-      ["60", "60s"],
-      ["300", "5m"],
+    expect(text(header)).toContain("Updated 2:00:00 pm");
+    expect(root.querySelector("select")).toBeNull();
+    const buttons = [...header.querySelectorAll<HTMLButtonElement>('.seg[role="group"][aria-label="Refresh every"] button[data-refresh]')];
+    expect(buttons.map((b) => [b.dataset.refresh, b.textContent, b.getAttribute("aria-pressed")])).toEqual([
+      ["30", "30s", "false"],
+      ["60", "60s", "true"],
+      ["300", "5m", "false"],
     ]);
-    expect(header.querySelector<HTMLSelectElement>("select")?.value).toBe("60");
+    renderDashboard(root, data, status({ refreshSeconds: 300 }));
+    expect(buttons.map((b) => b.getAttribute("aria-pressed"))).toEqual(["false", "false", "true"]);
     expect(text(header.querySelector('button[data-action="pause"]'))).toBe("Pause");
     // Light palette only: no Theme button.
     expect([...root.querySelectorAll("button")].some((b) => /theme/i.test(b.textContent ?? ""))).toBe(false);
@@ -83,10 +88,12 @@ describe("renderDashboard sections (mock fixture)", () => {
     const reads = service("firestore:yard").recent!.series.readsPerMin!;
     expect(text(hero.querySelector('[data-hero="reads"]'))).toBe((reads[29] as number).toFixed(2));
     expect(text(hero.querySelector('[data-hero="peak"]'))).toBe(Math.max(...(reads as number[])).toFixed(2));
-    for (const label of ["document reads per minute", "Writes/min", "Deletes/min", "Peak, 30 min", "reads/min"]) {
+    // The "reads/min" axis title is drawn by Chart.js (tests/page-chart-config.test.ts).
+    for (const label of ["document reads per minute", "Writes/min", "Deletes/min", "Peak, 30 min"]) {
       expect(text(hero)).toContain(label);
     }
-    expect(hero.querySelector(".hero-chart svg path.reads")?.getAttribute("d")).toMatch(/^M0\.0,/);
+    expect(hero.querySelector(".hero-chart canvas")).not.toBeNull();
+    expect(hero.querySelector("svg")).toBeNull();
   });
 
   it("renders the 5-stat health strip", () => {
@@ -133,12 +140,13 @@ describe("renderDashboard sections (mock fixture)", () => {
     expect([...storage.querySelectorAll(".bucket .name")].map(text)).toEqual(["paraliyard", "yard-backups"]);
     const hosting = root.querySelector('[data-section="hosting"]')!;
     expect(text(hosting.querySelector("h2"))).toBe("Firebase Hosting");
-    expect(hosting.querySelector(".host-chart svg")).not.toBeNull();
+    expect(hosting.querySelector(".host-chart canvas")).not.toBeNull();
+    expect(hosting.querySelector("svg")).toBeNull();
     expect([...hosting.querySelectorAll(".sites .name")].map(text)).toEqual(["paraliyard", "preparaliyard"]);
     const jobs = [...root.querySelectorAll<HTMLElement>('[data-section="jobs"] .job')];
     expect(jobs.map((j) => text(j.querySelector(".name")))).toEqual(["pyNightlyExport", "pyWeeklyAccounts"]);
-    expect(text(jobs[0])).toContain("Daily 02:30 IST");
-    expect(text(jobs[1])).toContain("Sundays 03:00 IST");
+    expect(text(jobs[0])).toContain("Every day, 2:30 am");
+    expect(text(jobs[1])).toContain("Sundays, 3:00 am");
     expect(text(jobs[0].querySelector(".next strong"))).toBe("in 12h 30m");
     // Sunday 11 Oct 03:00 IST.
     expect(text(jobs[1].querySelector(".next strong"))).toBe("in 5d 13h");
@@ -206,6 +214,101 @@ describe("meters and activity strip", () => {
   });
 });
 
+describe("page charts (Chart.js, mocked in tests/setup.ts)", () => {
+  const charts = () => vi.mocked(createPageCharts).mock.results.map((r) => r.value as { hero: Mock; host: Mock; destroy: Mock });
+
+  it("are created once per root and updated with each render's data, on the same canvas", async () => {
+    renderDashboard(root, data, status());
+    const heroCanvas = root.querySelector(".hero-chart canvas");
+    const hostCanvas = root.querySelector(".host-chart canvas");
+    const later = await createMockSource(() => NOW + 60000).load();
+    renderDashboard(root, later, status({ nowMs: NOW + 60000 }));
+
+    expect(createPageCharts).toHaveBeenCalledTimes(1);
+    const [page] = charts();
+    expect(page.hero).toHaveBeenCalledTimes(2);
+    expect(page.host).toHaveBeenCalledTimes(2);
+    const fsOf = (d: MetricsResponse) => d.services.find((s) => s.kind === "firestore");
+    const sitesOf = (d: MetricsResponse) => d.services.filter((s) => s.kind === "hosting");
+    expect(page.hero.mock.calls[0]).toEqual([heroCanvas, fsOf(data), Date.parse(data.generatedAt)]);
+    expect(page.hero.mock.calls[1]).toEqual([heroCanvas, fsOf(later), Date.parse(later.generatedAt)]);
+    expect(page.host.mock.calls[1]).toEqual([hostCanvas, sitesOf(later), Date.parse(later.generatedAt)]);
+    expect(page.hero.mock.calls[1][1]).not.toEqual(page.hero.mock.calls[0][1]);
+    // The containers and canvases are the same elements across renders.
+    expect(root.querySelector(".hero-chart canvas")).toBe(heroCanvas);
+    expect(root.querySelector(".host-chart canvas")).toBe(hostCanvas);
+    expect(heroCanvas?.isConnected).toBe(true);
+    expect(root.querySelector('[data-section="hero"] svg')).toBeNull();
+    expect(root.querySelector('[data-section="hosting"] svg')).toBeNull();
+  });
+
+  it("click and Enter on .hero-chart and .host-chart still open the fs and host drawers", () => {
+    renderDashboard(root, data, status());
+    renderDashboard(root, data, status());
+    const opened: string[] = [];
+    const unbind = bindOpeners(root, (opener) => opened.push(opener));
+    for (const selector of [".hero-chart", ".host-chart"]) {
+      const el = root.querySelector<HTMLElement>(selector)!;
+      expect(el.getAttribute("role")).toBe("button");
+      expect(el.getAttribute("tabindex")).toBe("0");
+      el.click();
+      el.focus();
+      el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    }
+    unbind();
+    expect(opened).toEqual(["fs", "fs", "host", "host"]);
+  });
+
+  it("a focused chart keeps focus across a refresh", () => {
+    renderDashboard(root, data, status());
+    const chart = root.querySelector<HTMLElement>(".hero-chart")!;
+    chart.focus();
+    renderDashboard(root, data, status());
+    expect(document.activeElement).toBe(chart);
+  });
+
+  it("are not created in off mode or before data has loaded, and destroyDashboard destroys them", () => {
+    renderDashboard(root, null, status({ state: "paused", off: true, mock: false, paused: true }));
+    renderDashboard(root, null, status({ state: "loading" }));
+    expect(createPageCharts).not.toHaveBeenCalled();
+    renderDashboard(root, data, status());
+    destroyDashboard(root);
+    expect(charts()[0].destroy).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("times (IST, 12-hour, no suffix)", () => {
+  // 5 Oct 2026, 11:07:01 pm IST.
+  const LATE = Date.UTC(2026, 9, 5, 17, 37, 1);
+
+  it("shows the update time, last run and next run with fixed timestamps", () => {
+    data.generatedAt = new Date(LATE).toISOString();
+    const nightly = service("scheduler:pyNightlyExport");
+    // 5 Oct 2026, 2:35:47 am IST.
+    nightly.metrics.lastRunAt = new Date(Date.UTC(2026, 9, 4, 21, 5, 47)).toISOString();
+    nightly.metrics.lastResult = "success";
+    // 6 Oct, 2:30 am IST.
+    nightly.nextRun = "2026-10-05T21:00:00.000Z";
+    renderDashboard(root, data, status({ nowMs: LATE }));
+    expect(text(root.querySelector("header.top"))).toContain("Updated 11:07:01 pm");
+    const job = root.querySelector<HTMLElement>('[data-job-id="scheduler:pyNightlyExport"]')!;
+    const last = job.querySelector(".last")!;
+    expect(text(last).startsWith("around 5 Oct 2026, 2:35:47 am")).toBe(true);
+    expect(text(last.querySelector(".badge"))).toBe("success");
+    const nextMeta = job.querySelectorAll(".next .meta");
+    expect(text(nextMeta[nextMeta.length - 1])).toBe("6 Oct, 2:30 am");
+    expect(text(job.querySelector(".next strong"))).toBe("in 3h 22m");
+  });
+
+  it("no rendered text has an IST suffix and 'Times in IST' appears at most once", () => {
+    renderDashboard(root, data, status());
+    const all = text(root);
+    expect(all.split("Times in IST").length - 1).toBeLessThanOrEqual(1);
+    expect(all.replace("Times in IST", "")).not.toContain(" IST");
+    expect(text(root.querySelector('[data-section="jobs"] .block-head p'))).toBe("Each square is one day; green ran successfully, red failed.");
+  });
+});
+
 describe("day squares", () => {
   it("are green, red or empty per IST day from the runs history", () => {
     const ist = (day: number, h: number, m: number) => new Date(Date.UTC(2026, 9, day, h, m) - 330 * 60000).toISOString();
@@ -239,7 +342,9 @@ describe("paused without data (off mode)", () => {
     renderDashboard(root, null, status({ state: "paused", off: true, mock: false, paused: true }));
     expect(text(root.querySelector("[data-live]"))).toBe("Paused");
     expect(text(root.querySelector("[data-note]"))).toContain("Live monitoring is paused");
-    expect(root.querySelector<HTMLSelectElement>("select")?.disabled).toBe(true);
+    const refresh = [...root.querySelectorAll<HTMLButtonElement>("button[data-refresh]")];
+    expect(refresh).toHaveLength(3);
+    expect(refresh.every((b) => b.disabled)).toBe(true);
     expect(root.querySelector<HTMLButtonElement>('button[data-action="pause"]')?.disabled).toBe(true);
     expect(root.querySelectorAll("[data-open]")).toHaveLength(0);
   });

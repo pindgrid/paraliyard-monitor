@@ -34,8 +34,8 @@ export interface JobSchedule {
 
 // Same values as functions/src/constants.js, copied from data/paraliyard-services.csv.
 export const JOB_SCHEDULES: Readonly<Record<string, JobSchedule>> = {
-  "scheduler:pyNightlyExport": { cron: "30 2 * * *", timeZone: "Asia/Kolkata", schedule: "Daily 02:30 IST" },
-  "scheduler:pyWeeklyAccounts": { cron: "0 3 * * 0", timeZone: "Asia/Kolkata", schedule: "Sundays 03:00 IST" },
+  "scheduler:pyNightlyExport": { cron: "30 2 * * *", timeZone: "Asia/Kolkata", schedule: "Every day, 2:30 am" },
+  "scheduler:pyWeeklyAccounts": { cron: "0 3 * * 0", timeZone: "Asia/Kolkata", schedule: "Sundays, 3:00 am" },
 };
 
 // Per-minute series in each service's `recent`, per kind (same as functions/src/aggregate.js).

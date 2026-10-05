@@ -49,20 +49,20 @@ button, select { font: inherit; color: inherit; }
 .seg button { border: 0; background: none; padding: 5px 11px; cursor: pointer; color: var(--ink-2); }
 .seg button + button { border-left: 1px solid var(--rule); }
 .seg button[aria-pressed="true"] { background: var(--ink); color: var(--surface); }
-.refresh { display: inline-flex; align-items: center; gap: 6px; }
-.refresh select { border: 1px solid var(--rule); background: var(--surface); border-radius: 8px; padding: 4px 8px; color: var(--ink); }
 .btn { border: 1px solid var(--rule); background: var(--surface); border-radius: 8px; padding: 5px 12px; cursor: pointer; color: var(--ink); }
 .btn:hover { border-color: var(--ink-3); }
-.btn:disabled, .refresh select:disabled { opacity: .55; cursor: not-allowed; }
+.btn:disabled, .seg button:disabled { opacity: .55; cursor: not-allowed; }
 .note { margin: 14px 0 0; font-size: 13px; color: var(--ink-2); background: var(--straw-soft); border-radius: 8px; padding: 9px 12px; max-width: 80ch; }
 .note.err { background: color-mix(in srgb, var(--ember) 14%, transparent); color: var(--ink); }
 .note code { font-size: 12px; }
 
 /* Hero */
-.hero { display: grid; grid-template-columns: minmax(230px, 300px) 1fr; gap: 28px; padding: 28px 0 24px; border-bottom: 1px solid var(--rule); }
+/* The left column is as wide as the big number, so it never runs into the chart. */
+.hero { display: grid; grid-template-columns: minmax(230px, max-content) 1fr; gap: 28px; padding: 28px 0 24px; border-bottom: 1px solid var(--rule); }
 .hero h2 { margin: 0; font-size: 15px; font-weight: 600; }
 .hero .src { margin: 2px 0 14px; font-size: 13px; color: var(--ink-3); }
-.bignum { display: block; font-size: clamp(58px, 8vw, 96px); font-weight: 300; font-stretch: 125%; line-height: .92; letter-spacing: -.035em; color: var(--straw); }
+/* Sized so an 8-character value ("1,234.56") fits beside the chart. */
+.bignum { display: block; font-size: clamp(44px, 6vw, 80px); white-space: nowrap; font-weight: 300; font-stretch: 125%; line-height: .92; letter-spacing: -.035em; color: var(--straw); }
 .unit { display: block; margin-top: 6px; font-size: 14px; color: var(--ink-2); }
 .sub { display: grid; grid-template-columns: repeat(3, auto); gap: 2px 22px; margin: 22px 0 0; justify-content: start; }
 .sub dt { font-size: 12px; color: var(--ink-3); } .sub dd { margin: 0; font-size: 18px; font-weight: 600; font-stretch: 105%; }
@@ -70,15 +70,6 @@ button, select { font: inherit; color: inherit; }
 .hero-chart { position: relative; height: clamp(230px, 34vh, 330px); cursor: zoom-in; border-radius: 10px; padding: 6px; }
 .hero-chart:hover { background: var(--surface); }
 .hero > *, .cols > *, .job > * { min-width: 0; }
-.spark { display: block; width: 100%; height: 100%; overflow: visible; }
-.spark .grid { stroke: var(--rule); stroke-width: 1; }
-.spark .reads { fill: none; stroke: var(--straw); stroke-width: 2; }
-.spark .reads-area { fill: color-mix(in srgb, var(--straw) 14%, transparent); stroke: none; }
-.spark .writes { fill: none; stroke: var(--paddy); stroke-width: 1.4; }
-.spark .deletes { fill: none; stroke: var(--ember); stroke-width: 1.4; }
-.spark text { fill: var(--ink-3); font-size: 11px; }
-.legend-inline { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--ink-2); margin-top: 6px; }
-.legend-inline span::before { content: ""; display: inline-block; width: 18px; height: 2px; margin-right: 6px; vertical-align: 3px; background: var(--c, var(--straw)); }
 @media (max-width: 780px) { .hero { grid-template-columns: 1fr; gap: 16px; } }
 
 /* Health strip */
@@ -140,8 +131,6 @@ table.fn { width: 100%; border-collapse: collapse; min-width: 860px; }
 .bucket .full { grid-column: 2/-1; font-size: 12px; color: var(--ink-3); }
 .host-chart { position: relative; height: 170px; cursor: zoom-in; border-radius: 8px; }
 .host-chart:hover { background: var(--surface); }
-.bars { display: block; width: 100%; height: 100%; }
-.bars text { fill: var(--ink-3); font-size: 11px; }
 .sites { margin-top: 10px; }
 
 /* Scheduler */
@@ -176,9 +165,6 @@ table.fn { width: 100%; border-collapse: collapse; min-width: 860px; }
 .drow { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
 .dchart { position: relative; height: 300px; flex: none; }
 .dmsg { position: absolute; inset: 0; display: grid; place-items: center; font-size: 13px; color: var(--ink-3); text-align: center; padding: 20px; }
-.dlegend { display: flex; flex-wrap: wrap; gap: 6px; }
-.dlegend button { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--rule); background: var(--surface); border-radius: 8px; padding: 3px 9px; cursor: pointer; font-size: 12px; color: var(--ink-2); }
-.dlegend button[aria-pressed="false"] { opacity: .5; text-decoration: line-through; }
 table.dstats { width: 100%; border-collapse: collapse; font-size: 13px; }
 .dstats th, .dstats td { padding: 7px 8px; border-bottom: 1px solid var(--rule); text-align: right; white-space: nowrap; }
 .dstats th:first-child, .dstats td:first-child { text-align: left; }

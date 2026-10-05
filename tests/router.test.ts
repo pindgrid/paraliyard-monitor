@@ -119,13 +119,14 @@ describe("router", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(drawerOpen()).toBe(true);
     expect(drawerTitle()).toBe("pyMintOnCrewClaim");
-    const legend = [...(aside()?.querySelectorAll<HTMLElement>("[data-series]") ?? [])];
-    expect(legend.map((b) => [b.textContent, b.getAttribute("aria-pressed")])).toEqual([
-      ["Requests/min", "true"],
-      ["Errors/min", "true"],
-      ["Instances", "false"],
-      ["CPU % (p99)", "true"],
-      ["RAM % (p99)", "false"],
+    // The Chart.js legend draws on the canvas; visible series have unmuted stats rows.
+    const rows = [...(aside()?.querySelectorAll<HTMLElement>(".dstats tbody tr") ?? [])];
+    expect(rows.map((tr) => [tr.querySelector("td")?.textContent, !tr.classList.contains("muted")])).toEqual([
+      ["Requests/min", true],
+      ["Errors/min", true],
+      ["Instances", false],
+      ["CPU % (p99)", true],
+      ["RAM % (p99)", false],
     ]);
     expect(drawerCalls(calls).every((c) => params(c.url).get("range") === "24h")).toBe(true);
     expect(pageVisible()).toBe(true);

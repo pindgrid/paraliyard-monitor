@@ -1,13 +1,13 @@
 import { createDrawerChart, type DrawerChart, type DrawerChartFactory, type XYPoint } from "./drawer-chart";
 import { COLORS, groupFor, liveValue, type DrawerGroup } from "./drawer-groups";
-import { DASH, escapeHtml as esc, fmt, istDateTime } from "./fmt";
+import { DASH, escapeHtml as esc, fmt, istDateTime, istTick } from "./fmt";
 import type { HistorySource } from "./history-source";
 import { rangeSeconds } from "./routes";
 import { computeStats, csvText, runsCsvText, type RunRow } from "./stats";
 import type { HistoryPoint, HistoryRange, MetricsResponse } from "./types";
 
 // The right-hand history drawer: a modal dialog with a scrim, range buttons,
-// one bundled Chart.js chart, an HTML legend that also drives the stats table,
+// one bundled Chart.js chart whose legend also mutes rows of the stats table,
 // and a client-side CSV download. Each series is one HistorySource call.
 
 export interface DrawerOptions {
@@ -100,7 +100,6 @@ export function createDrawer({ doc, host, source, createChart = createDrawerChar
     <button class="btn" type="button" data-d="csv">Download CSV</button>
   </div>
   <div class="dchart"><canvas data-d="canvas"></canvas><div class="dmsg" data-d="msg" hidden></div></div>
-  <div class="dlegend" data-d="legend" role="group" aria-label="Series"></div>
   <div data-d="stats"></div>
   <p class="dfoot" data-d="foot"></p>`;
   host.append(scrim, aside);
@@ -138,19 +137,6 @@ export function createDrawer({ doc, host, source, createChart = createDrawerChar
       .join("");
   }
 
-  function renderLegend() {
-    if (!group || group.type === "runs") {
-      part("legend").innerHTML = "";
-      return;
-    }
-    part("legend").innerHTML = group.series
-      .map(
-        (s, i) =>
-          `<button type="button" data-series="${i}" aria-pressed="${visible[i]}"><span class="sw" style="background:var(${s.color})"></span>${esc(s.label)}</button>`,
-      )
-      .join("");
-  }
-
   function renderStats() {
     if (!group || group.type === "runs") return;
     const rows = group.series
@@ -167,6 +153,7 @@ export function createDrawer({ doc, host, source, createChart = createDrawerChar
 
   function buildLine(g: DrawerGroup, r: HistoryRange, results: (HistoryPoint[] | null)[]) {
     data = results.map((points) => (points ? toXY(points) : []));
+    const built = token;
     const to = now();
     const from = to - rangeSeconds(r) * 1000;
     const failed = results.every((p) => p === null);
@@ -177,6 +164,7 @@ export function createDrawer({ doc, host, source, createChart = createDrawerChar
       from,
       to,
       formatX: istDateTime,
+      formatTick: (ms) => istTick(ms, to - from),
       axes: g.axes,
       formats: g.series.map((s) => s.format),
       datasets: g.series.map((s, i) => ({
@@ -188,11 +176,17 @@ export function createDrawer({ doc, host, source, createChart = createDrawerChar
         fill: s.fill,
         stepped: s.stepped,
       })),
+      onLegendToggle: (i, shown) => {
+        // Ignore a chart from an earlier load.
+        if (built !== token || i < 0 || i >= visible.length) return;
+        visible[i] = shown;
+        renderStats();
+      },
     });
     renderStats();
     const count = data.reduce((a, d) => a + d.length, 0);
     part("foot").textContent =
-      `${count.toLocaleString("en-IN")} points from ${istDateTime(from)} to ${istDateTime(to)}. Use the legend to hide or show a line.` +
+      `${count.toLocaleString("en-IN")} points from ${istDateTime(from)} to ${istDateTime(to)}. Click a legend item to hide or show a line.` +
       (rangeSeconds(r) <= LIVE_APPEND_MAX_SECONDS ? " New points are added live." : "");
   }
 
@@ -337,15 +331,6 @@ ${latest
       renderRanges();
       void load();
       onRange?.(next);
-      return;
-    }
-    const legendButton = target.closest<HTMLElement>("[data-series]");
-    if (legendButton && group) {
-      const i = Number(legendButton.dataset.series);
-      visible[i] = !visible[i];
-      chart?.setVisible(i, visible[i]);
-      renderLegend();
-      renderStats();
     }
   }
 
@@ -374,7 +359,6 @@ ${latest
       part("sub").textContent = next.sub;
       aside.dataset.opener = opener;
       renderRanges();
-      renderLegend();
       open = true;
       aside.classList.add("open");
       aside.setAttribute("aria-hidden", "false");

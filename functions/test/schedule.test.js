@@ -19,13 +19,16 @@ test("job schedules are the CSV values in Asia/Kolkata", () => {
   assert.deepEqual(JOB_SCHEDULES["scheduler:pyNightlyExport"], {
     cron: "30 2 * * *",
     timeZone: "Asia/Kolkata",
-    schedule: "Daily 02:30 IST",
+    schedule: "Every day, 2:30 am",
   });
   assert.deepEqual(JOB_SCHEDULES["scheduler:pyWeeklyAccounts"], {
     cron: "0 3 * * 0",
     timeZone: "Asia/Kolkata",
-    schedule: "Sundays 03:00 IST",
+    schedule: "Sundays, 3:00 am",
   });
+  // Only the display text changed: the cron strings stay the same.
+  assert.equal(DAILY, "30 2 * * *");
+  assert.equal(WEEKLY, "0 3 * * 0");
   assert.ok(Object.isFrozen(JOB_SCHEDULES));
 });
 

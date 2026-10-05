@@ -195,26 +195,26 @@ describe("closing and focus", () => {
 });
 
 describe("legend and stats", () => {
-  it("shows Series, Latest, Min, Average, Max and p99, and a legend toggle updates it", async () => {
+  it("shows Series, Latest, Min, Average, Max and p99, and a Chart.js legend toggle mutes its row", async () => {
     root.querySelector<HTMLElement>('tr[data-open="fn:function2:pyMintOnCrewClaim"]')!.click();
     await drawer.settled();
     const headers = [...aside().querySelectorAll(".dstats thead th")].map((th) => th.textContent);
     expect(headers).toEqual(["Series", "Latest", "Min", "Average", "Max", "p99"]);
     const rowState = () => [...aside().querySelectorAll<HTMLElement>(".dstats tbody tr")].map((tr) => tr.classList.contains("muted"));
+    // No HTML legend: the chart draws it.
+    expect(aside().querySelector(".dlegend")).toBeNull();
+    expect(aside().querySelector("[data-series]")).toBeNull();
     // Instances, CPU and RAM start hidden.
     expect(rowState()).toEqual([false, false, true, true, true]);
-    const errorsButton = aside().querySelector<HTMLElement>('[data-series="1"]')!;
-    expect(errorsButton.getAttribute("aria-pressed")).toBe("true");
-    errorsButton.click();
+    expect(charts[0].spec.datasets.map((d) => Boolean(d.hidden))).toEqual([false, false, true, true, true]);
+    const toggle = charts[0].spec.onLegendToggle!;
+    toggle(1, false);
     expect(rowState()).toEqual([false, true, true, true, true]);
-    expect(aside().querySelector('[data-series="1"]')?.getAttribute("aria-pressed")).toBe("false");
-    expect(charts[0].visible).toEqual([[1, false]]);
-    aside().querySelector<HTMLElement>('[data-series="3"]')!.click();
+    expect(aside().querySelector('.dstats tbody tr[data-row="1"]')?.getAttribute("data-hidden")).toBe("true");
+    toggle(3, true);
     expect(rowState()).toEqual([false, true, true, false, true]);
-    expect(charts[0].visible).toEqual([
-      [1, false],
-      [3, true],
-    ]);
+    // A legend toggle never loads anything.
+    expect(loads).toHaveLength(5);
     // Values come from the loaded points.
     const cpuRow = aside().querySelectorAll(".dstats tbody tr")[3];
     expect(cpuRow.querySelectorAll("td")[1].textContent).toMatch(/^\d+%$/);
@@ -224,6 +224,27 @@ describe("legend and stats", () => {
     drawer.open("fn:function2:pyMintOnCrewClaim", { metric: "cpuPct" });
     await drawer.settled();
     expect(charts[0].spec.datasets.map((d) => Boolean(d.hidden))).toEqual([false, false, true, false, true]);
+  });
+});
+
+describe("times", () => {
+  it("tooltip titles and the footer read like '5 Oct 2026, 2:35:47 am', with no IST suffix", async () => {
+    drawer.open("fs", { range: "1h" });
+    await drawer.settled();
+    const spec = charts[0].spec;
+    // 5 Oct 2026, 2:35:47 am IST.
+    expect(spec.formatX(Date.UTC(2026, 9, 4, 21, 5, 47))).toBe("5 Oct 2026, 2:35:47 am");
+    // 1h range: ticks are short times. NOW is 2:00 pm IST.
+    expect(spec.formatTick?.(NOW)).toBe("2:00 pm");
+    const foot = aside().querySelector('[data-d="foot"]')!.textContent ?? "";
+    expect(foot).toContain("from 5 Oct 2026, 1:00:00 pm to 5 Oct 2026, 2:00:00 pm");
+    expect(foot).not.toContain(" IST");
+
+    drawer.open("job:scheduler:pyNightlyExport");
+    await drawer.settled();
+    const runs = charts[1].spec;
+    expect(runs.labels?.every((l) => /^\d+ \w+ \d{4}, \d{1,2}:\d\d:\d\d [ap]m$/.test(l))).toBe(true);
+    expect(aside().textContent).not.toContain(" IST");
   });
 });
 
@@ -302,7 +323,7 @@ describe("ranges", () => {
     ]);
     const rows = [...aside().querySelectorAll('[data-table="runs"] tbody tr')];
     expect(rows.length).toBeGreaterThan(20);
-    expect(rows[0].querySelector("td")?.textContent).toMatch(/^around \d+ \w+, \d\d:\d\d IST$/);
+    expect(rows[0].querySelector("td")?.textContent).toMatch(/^around \d+ \w+ \d{4}, \d{1,2}:\d\d:\d\d [ap]m$/);
     expect(rows.some((r) => r.textContent?.includes("failed"))).toBe(true);
     expect(rows.every((r) => /^\d+s$/.test(r.querySelectorAll("td")[2].textContent ?? ""))).toBe(true);
     expect(charts[0].spec.kind).toBe("bar");

@@ -1,5 +1,6 @@
 // Display formatting for the dashboard and drawer. Missing values are "—".
-// Times are always shown in India Standard Time.
+// Times are always shown in India Standard Time, 12-hour, without a suffix
+// (the page says "Times in IST" once).
 
 export const DASH = "—";
 
@@ -23,34 +24,83 @@ export const fmt = {
 };
 
 const IST = "Asia/Kolkata";
+const DAY_MS = 86400000;
 
-const timeFormatter = new Intl.DateTimeFormat("en-IN", {
-  timeZone: IST,
-  hour: "2-digit",
-  minute: "2-digit",
-  second: "2-digit",
-  hourCycle: "h23",
-});
-
-const dateTimeFormatter = new Intl.DateTimeFormat("en-IN", {
+// One 12-hour formatter; the strings below are built from its parts so they
+// read the same on every ICU version (lowercase am/pm, plain spaces).
+const partsFormatter = new Intl.DateTimeFormat("en-IN", {
   timeZone: IST,
   day: "numeric",
   month: "short",
-  hour: "2-digit",
+  year: "numeric",
+  hour: "numeric",
   minute: "2-digit",
-  hourCycle: "h23",
+  second: "2-digit",
+  hour12: true,
 });
 
 const dayFormatter = new Intl.DateTimeFormat("en-IN", { timeZone: IST, day: "numeric", month: "short" });
 
-// "14:05:07 IST", or "—" for an invalid time.
-export function istTime(ms: number): string {
-  return Number.isFinite(ms) ? `${timeFormatter.format(new Date(ms))} IST` : DASH;
+interface IstParts {
+  day: string;
+  month: string;
+  year: string;
+  hour: string;
+  minute: string;
+  second: string;
+  period: string;
 }
 
-// "5 Oct, 02:30 IST", or "—" for an invalid time.
+function istParts(ms: number): IstParts {
+  const p: Record<string, string> = {};
+  for (const part of partsFormatter.formatToParts(new Date(ms))) p[part.type] = part.value;
+  return {
+    day: p.day ?? "",
+    month: p.month ?? "",
+    year: p.year ?? "",
+    hour: String(Number(p.hour)),
+    minute: p.minute ?? "",
+    second: p.second ?? "",
+    period: (p.dayPeriod ?? "").toLowerCase(),
+  };
+}
+
+// "11:07:01 pm", or "—" for an invalid time.
+export function istTime(ms: number): string {
+  if (!Number.isFinite(ms)) return DASH;
+  const p = istParts(ms);
+  return `${p.hour}:${p.minute}:${p.second} ${p.period}`;
+}
+
+// "10:36 pm", or "—" for an invalid time.
+export function istShortTime(ms: number): string {
+  if (!Number.isFinite(ms)) return DASH;
+  const p = istParts(ms);
+  return `${p.hour}:${p.minute} ${p.period}`;
+}
+
+// "5 Oct 2026, 2:35:47 am", or "—" for an invalid time.
 export function istDateTime(ms: number): string {
-  return Number.isFinite(ms) ? `${dateTimeFormatter.format(new Date(ms))} IST` : DASH;
+  if (!Number.isFinite(ms)) return DASH;
+  const p = istParts(ms);
+  return `${p.day} ${p.month} ${p.year}, ${p.hour}:${p.minute}:${p.second} ${p.period}`;
+}
+
+// "6 Oct, 2:30 am", or "—" for an invalid time.
+export function istDayTime(ms: number): string {
+  if (!Number.isFinite(ms)) return DASH;
+  const p = istParts(ms);
+  return `${p.day} ${p.month}, ${p.hour}:${p.minute} ${p.period}`;
+}
+
+// Axis label for a chart covering rangeMs: "10:36 pm" up to a day,
+// "5 Oct, 2 pm" up to a week, "5 Oct" beyond.
+export function istTick(ms: number, rangeMs: number): string {
+  if (!Number.isFinite(ms)) return DASH;
+  const p = istParts(ms);
+  if (rangeMs <= DAY_MS) return `${p.hour}:${p.minute} ${p.period}`;
+  if (rangeMs <= 7 * DAY_MS) return `${p.day} ${p.month}, ${p.hour} ${p.period}`;
+  return `${p.day} ${p.month}`;
 }
 
 // "5 Oct" in IST.
