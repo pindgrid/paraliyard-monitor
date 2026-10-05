@@ -113,7 +113,8 @@ export type HistoryRange = "1h" | "6h" | "24h" | "7d" | "30d" | "6w";
 // Totals over every service of one kind (GET /api/history only).
 export type AggregateId = "total:function2" | "total:bucket" | "total:hosting";
 
-export type RunResult = "success" | "failed" | "missed" | "upcoming";
+// "before-first-run": a closed occurrence before the first observed run in the range.
+export type RunResult = "success" | "failed" | "missed" | "upcoming" | "before-first-run";
 
 // A history point. Scheduler runs have one point per scheduled occurrence:
 // t is the scheduled time, v and requests the requests in its run window,

@@ -48,6 +48,23 @@ function classifyRuns(series, cron, fromMs, nowMs, stepSeconds = 300) {
   return { runs, otherCalls };
 }
 
+// /api/history only: closed occurrences before the first observed run (the
+// earliest with any request, 2xx or not) become "before-first-run" instead of
+// "missed". With no observed run, every closed occurrence does. Changes runs in
+// place and returns it; /api/metrics keeps the plain classifyRuns results.
+function markBeforeFirstRun(runs, nowMs) {
+  const first = runs.findIndex((r) => r.requests > 0);
+  const end = first === -1 ? runs.length : first;
+  for (let i = 0; i < end; i++) {
+    const r = runs[i];
+    if (nowMs < r.at + RUN_WINDOW_MS) continue;
+    r.result = "before-first-run";
+    r.requests = 0;
+    r.failed = 0;
+  }
+  return runs;
+}
+
 // The latest run whose window has closed, or null.
 function latestClosedRun(runs, nowMs) {
   let best = null;
@@ -55,4 +72,4 @@ function latestClosedRun(runs, nowMs) {
   return best;
 }
 
-module.exports = { classifyRuns, latestClosedRun };
+module.exports = { classifyRuns, markBeforeFirstRun, latestClosedRun };

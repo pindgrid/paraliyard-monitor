@@ -94,6 +94,31 @@ describe("daySquares", () => {
     for (const s of coloured) expect(new Date(s.start + 330 * 60000).getUTCDay()).toBe(0);
   });
 
+  it("before-first-run occurrences are empty squares titled no run, not red", () => {
+    const points = Array.from({ length: 13 }, (_, i) => run(ist(9, 22 + i, 2, 30), "before-first-run"));
+    points.push(run(ist(10, 5, 2, 30), "success"));
+    const squares = daySquares(points, NOW);
+    for (const s of squares.slice(0, 13)) {
+      expect(s.state).toBe("none");
+      expect(s.label.endsWith(": no run")).toBe(true);
+    }
+    expect(squares.some((s) => s.state === "failed" || s.state === "missed")).toBe(false);
+    expect(squares[13]).toMatchObject({ state: "ok", label: "5 Oct: success" });
+  });
+
+  it("a missed occurrence after a success is still red titled missed", () => {
+    const points = [
+      run(ist(10, 2, 2, 30), "before-first-run"),
+      run(ist(10, 3, 2, 30), "success"),
+      run(ist(10, 4, 2, 30), "missed"),
+      run(ist(10, 5, 2, 30), "success"),
+    ];
+    const squares = daySquares(points, NOW);
+    expect(squares[10]).toMatchObject({ state: "none", label: "2 Oct: no run" });
+    expect(squares[11].state).toBe("ok");
+    expect(squares[12]).toMatchObject({ state: "missed", label: "4 Oct: missed" });
+  });
+
   it("ignores runs older than 14 days or unknown points", () => {
     const squares = daySquares([point(ist(9, 21, 2, 31), 1, 1), { t: "bad", v: 1 }], NOW);
     expect(squares.every((s) => s.state === "none")).toBe(true);

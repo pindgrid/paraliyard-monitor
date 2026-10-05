@@ -129,6 +129,10 @@ describe("createMockHistorySource", () => {
     expect(happened.some((p) => (p.failed ?? 0) > 0)).toBe(true);
     expect(happened.some((p) => p.failed === 0)).toBe(true);
     expect(runs.points.some((p) => p.result === "missed")).toBe(true);
+    // Nothing before the first run is missed; a gap after it still is.
+    const firstRun = runs.points.findIndex((p) => p.result === "success" || p.result === "failed");
+    expect(runs.points.slice(0, firstRun).every((p) => p.result === "before-first-run")).toBe(true);
+    expect(runs.points.slice(firstRun).some((p) => p.result === "missed")).toBe(true);
     const durations = await source.load("scheduler:pyNightlyExport", "durationSec", "30d");
     expect(durations.points).toHaveLength(happened.length);
     durations.points.forEach((p, i) => {

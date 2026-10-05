@@ -116,7 +116,7 @@ describe("createMockHistorySource", () => {
     expect(a.points.length).toBeGreaterThanOrEqual(23);
     for (const p of a.points) {
       expect(new Date(p.t).toISOString().slice(11)).toBe("21:00:00.000Z");
-      expect(["success", "failed", "missed", "upcoming"]).toContain(p.result);
+      expect(["success", "failed", "missed", "upcoming", "before-first-run"]).toContain(p.result);
       expect(p.v).toBe(p.requests);
       expect(p.failed ?? 0).toBeLessThanOrEqual(p.requests ?? 0);
     }
@@ -127,6 +127,24 @@ describe("createMockHistorySource", () => {
     expect(a.otherCalls?.failed).toBeGreaterThan(0);
     // Other metrics carry no otherCalls.
     expect("otherCalls" in (await createMockHistorySource(() => NOW).load("firestore:yard", "readsPerMin", "24h"))).toBe(false);
+  });
+
+  it("mock runs have no missed before the first success or failure, and some missed after it", async () => {
+    for (const [service, range] of [
+      ["scheduler:pyNightlyExport", "30d"],
+      ["scheduler:pyWeeklyAccounts", "6w"],
+    ] as const) {
+      const a = await createMockHistorySource(() => NOW).load(service, "runs", range);
+      const b = await createMockHistorySource(() => NOW).load(service, "runs", range);
+      expect(a).toEqual(b);
+      const first = a.points.findIndex((p) => p.result === "success" || p.result === "failed");
+      expect(first, service).toBeGreaterThanOrEqual(0);
+      for (const p of a.points.slice(0, first)) {
+        expect(p.result, `${service} ${p.t}`).toBe("before-first-run");
+        expect(p).toMatchObject({ v: 0, requests: 0, failed: 0 });
+      }
+      if (service === "scheduler:pyNightlyExport") expect(a.points.slice(first).some((p) => p.result === "missed")).toBe(true);
+    }
   });
 
   it("marks a run whose window is still open as upcoming", async () => {
@@ -157,6 +175,7 @@ describe("createLiveHistorySource", () => {
       range: "30d",
       unit: "runs",
       points: [
+        { t: "2026-09-17T21:00:00.000Z", v: 0, result: "before-first-run", requests: 0, failed: 0 },
         { t: "2026-09-18T21:00:00.000Z", v: 0, result: "missed", requests: 0, failed: 0 },
         { t: "2026-10-04T21:00:00.000Z", v: 1, result: "success", requests: 1, failed: 0 },
         { t: "2026-10-05T21:00:00.000Z", v: 0, result: "upcoming", requests: 0, failed: 0 },
@@ -168,7 +187,7 @@ describe("createLiveHistorySource", () => {
     const data = await createLiveHistorySource(fetchFn as unknown as typeof fetch).load("scheduler:pyNightlyExport", "runs", "30d");
     expect(data).toEqual(runs);
     expect(data.otherCalls).toEqual({ count: 4, failed: 4 });
-    expect(data.points.map((p) => p.result)).toEqual(["missed", "success", "upcoming"]);
+    expect(data.points.map((p) => p.result)).toEqual(["before-first-run", "missed", "success", "upcoming"]);
     // A stale answer keeps the same shape.
     const stale = vi.fn(async () => fakeResponse({ ...runs, stale: true }));
     expect((await createLiveHistorySource(stale as unknown as typeof fetch).load("scheduler:pyNightlyExport", "runs", "30d")).stale).toBe(true);

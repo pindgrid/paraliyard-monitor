@@ -3,6 +3,7 @@ import { DAY_MS, istDayStart } from "./schedule";
 import type { HistoryPoint } from "./types";
 
 // "missed": a scheduled run had no request in its window. Drawn red like "failed".
+// Occurrences before the job's first run ("before-first-run") draw as "none".
 export type DayState = "ok" | "failed" | "missed" | "none";
 
 export interface DaySquare {
@@ -19,12 +20,12 @@ const LABELS: Record<DayState, string> = { ok: "success", failed: "failed", miss
 type RunState = Exclude<DayState, "none">;
 
 // State of one runs point: scheduled occurrences carry their result (an
-// upcoming run is not a state yet); older points without one count as a run
-// when v > 0, failed when any of it was non-2xx.
+// upcoming run, or one before the job's first run, is not a state); older
+// points without one count as a run when v > 0, failed when any was non-2xx.
 function runState(p: HistoryPoint): RunState | null {
   if (p.result === "success") return "ok";
   if (p.result === "failed" || p.result === "missed") return p.result;
-  if (p.result === "upcoming") return null;
+  if (p.result === "upcoming" || p.result === "before-first-run") return null;
   if (!(p.v > 0)) return null;
   return (p.failed ?? 0) > 0 ? "failed" : "ok";
 }

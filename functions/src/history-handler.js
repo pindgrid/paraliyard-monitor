@@ -10,7 +10,7 @@ const {
 } = require("./history");
 const { callOptions, isNotFound, failureLine } = require("./collect");
 const { JOB_SCHEDULES } = require("./constants");
-const { classifyRuns } = require("./runs");
+const { classifyRuns, markBeforeFirstRun } = require("./runs");
 
 const NO_STORE = "no-store";
 // At most this many history calls per rolling window, per instance.
@@ -48,7 +48,8 @@ function createLimiter({ now, limit = RATE_LIMIT, windowMs = RATE_WINDOW_MS }) {
 }
 
 // Scheduler runs: one point per scheduled occurrence in the range, plus the
-// requests outside every run window. Raw buckets never leave the backend.
+// requests outside every run window. Closed occurrences before the first
+// observed run are "before-first-run". Raw buckets never leave the backend.
 function runsAnswer(series, service, range, nowMs) {
   const metricSpec = HISTORY_METRICS[service.kind].runs;
   const { runs, otherCalls } = classifyRuns(
@@ -58,7 +59,7 @@ function runsAnswer(series, service, range, nowMs) {
     nowMs,
     alignmentOf(metricSpec, range),
   );
-  const points = runs.map((r) => ({
+  const points = markBeforeFirstRun(runs, nowMs).map((r) => ({
     t: new Date(r.at).toISOString(),
     v: r.requests,
     result: r.result,

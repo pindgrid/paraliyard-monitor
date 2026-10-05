@@ -431,12 +431,13 @@ test("durationSec answers in seconds and runs points are scheduled occurrences",
   assert.deepEqual(duration.body.points, [{ t: new Date(START).toISOString(), v: 1.5 }]);
   const runs = await get({ service: "scheduler:pyNightlyExport", metric: "runs", range: "7d" });
   // START is 17:30 IST: the buckets lie outside every 02:30 IST run window,
-  // so the 7 daily occurrences are missed and the requests are other calls.
+  // so no run is observed: the 7 daily occurrences are before-first-run and
+  // the requests are other calls.
   assert.equal(runs.body.unit, "runs");
   assert.equal(runs.body.points.length, 7);
   for (const point of runs.body.points) {
     assert.equal(new Date(point.t).getUTCHours(), 21);
-    assert.deepEqual({ ...point, t: undefined }, { t: undefined, v: 0, result: "missed", requests: 0, failed: 0 });
+    assert.deepEqual({ ...point, t: undefined }, { t: undefined, v: 0, result: "before-first-run", requests: 0, failed: 0 });
   }
   assert.deepEqual(runs.body.otherCalls, { count: 3, failed: 1 });
   assert.equal(fake.calls.length, 2);
@@ -472,8 +473,9 @@ test("live log, nightly 30d: one point per 02:30 IST occurrence and the 18:20 ca
     assert.equal(new Date(p.t).getUTCMinutes(), 0, p.t);
   }
   const at = (ms) => points.find((p) => p.t === new Date(ms).toISOString());
-  assert.deepEqual(at(ist(9, 19, 2, 30)), { t: new Date(ist(9, 19, 2, 30)).toISOString(), v: 0, result: "missed", requests: 0, failed: 0 });
+  assert.deepEqual(at(ist(9, 19, 2, 30)), { t: new Date(ist(9, 19, 2, 30)).toISOString(), v: 0, result: "before-first-run", requests: 0, failed: 0 });
   assert.deepEqual(at(ist(10, 5, 2, 30)), { t: new Date(ist(10, 5, 2, 30)).toISOString(), v: 1, result: "success", requests: 1, failed: 0 });
+  assert.ok(points.slice(0, -1).every((p) => p.result === "before-first-run"));
   // No point sits at the 18:20 calls.
   assert.ok(points.every((p) => !p.t.startsWith("2026-09-19T12:")));
   assert.deepEqual(otherCalls, { count: 4, failed: 4 });
@@ -490,18 +492,38 @@ test("live log, weekly 30d: only Sunday 03:00 IST occurrences, Thursday calls on
   );
   for (const p of points) assert.equal(new Date(Date.parse(p.t) + 330 * 60000).getUTCDay(), 0, p.t);
   assert.deepEqual(points[points.length - 1], { t: new Date(ist(10, 4, 3, 0)).toISOString(), v: 1, result: "success", requests: 1, failed: 0 });
-  assert.ok(points.slice(0, -1).every((p) => p.result === "missed"));
+  assert.ok(points.slice(0, -1).every((p) => p.result === "before-first-run"));
   assert.deepEqual(otherCalls, { count: 3, failed: 3 });
 });
 
-test("runs: an open window is upcoming and a closed empty one is missed", async () => {
+test("runs: an open window is upcoming and closed empty ones before the first run are before-first-run", async () => {
   const { get, clock } = liveSetup();
   clock.t = ist(10, 6, 2, 45);
   const res = await get({ service: "scheduler:pyNightlyExport", metric: "runs", range: "7d" });
   const { points } = res.body;
   assert.deepEqual(points[points.length - 1], { t: new Date(ist(10, 6, 2, 30)).toISOString(), v: 0, result: "upcoming", requests: 0, failed: 0 });
   assert.equal(points[points.length - 2].result, "success");
-  assert.equal(points[points.length - 3].result, "missed");
+  assert.deepEqual(points[points.length - 3], { t: new Date(ist(10, 4, 2, 30)).toISOString(), v: 0, result: "before-first-run", requests: 0, failed: 0 });
+});
+
+test("runs: a closed empty window after the first run stays missed, one call per miss", async () => {
+  const resource = { labels: { service_name: "pynightlyexport" } };
+  const pt = (end, v) => ({ interval: { endTime: { seconds: String(Math.floor(end / 1000)), nanos: 0 } }, value: { int64Value: String(v) } });
+  const respond = () => [
+    { resource, metric: { labels: { response_code_class: "2xx" } }, points: [pt(ist(10, 3, 2, 37), 1), pt(ist(10, 5, 2, 37), 1)] },
+  ];
+  const { get, fake } = liveSetup({ respond });
+  const res = await get({ service: "scheduler:pyNightlyExport", metric: "runs", range: "7d" });
+  assert.equal(res.statusCode, 200);
+  assert.equal(fake.calls.length, 1);
+  const { points } = res.body;
+  for (const p of points) assert.deepEqual(Object.keys(p), ["t", "v", "result", "requests", "failed"]);
+  assert.deepEqual(
+    points.map((p) => p.result),
+    ["before-first-run", "before-first-run", "before-first-run", "before-first-run", "success", "missed", "success"],
+  );
+  assert.deepEqual(points[5], { t: new Date(ist(10, 4, 2, 30)).toISOString(), v: 0, result: "missed", requests: 0, failed: 0 });
+  assert.deepEqual(res.body.otherCalls, { count: 0, failed: 0 });
 });
 
 test("scheduler history uses 300 s alignment at 7d, 30d and 6w with one call per miss", async () => {
@@ -551,7 +573,7 @@ test("runs NOT_FOUND or empty still lists the occurrences with zero otherCalls",
     const res = await get({ service: "scheduler:pyWeeklyAccounts", metric: "runs", range: "30d" });
     assert.equal(res.statusCode, 200);
     assert.equal(res.body.points.length, 5);
-    assert.ok(res.body.points.every((p) => p.result === "missed" && p.requests === 0));
+    assert.ok(res.body.points.every((p) => p.result === "before-first-run" && p.requests === 0));
     assert.deepEqual(res.body.otherCalls, { count: 0, failed: 0 });
   }
 });

@@ -1,6 +1,6 @@
 import { createDrawerChart, type DrawerChart, type DrawerChartFactory, type XYPoint } from "./drawer-chart";
 import { COLORS, groupFor, liveValue, type DrawerGroup } from "./drawer-groups";
-import { DASH, escapeHtml as esc, fmt, istDateTime, istTick } from "./fmt";
+import { DASH, escapeHtml as esc, fmt, istDateTime, istDay, istTick } from "./fmt";
 import type { HistorySource } from "./history-source";
 import { rangeSeconds } from "./routes";
 import { RUN_WINDOW_MS } from "./schedule";
@@ -56,8 +56,9 @@ function toXY(points: readonly HistoryPoint[]): XYPoint[] {
 // Scheduler duration buckets are 5 minutes: (t - 300 s, t].
 const DURATION_BUCKET_MS = 300000;
 
-// Closed scheduled occurrences, oldest first. Upcoming runs are left out.
-// Points without a result (older answers) count as runs when v > 0.
+// Closed scheduled occurrences, oldest first. Upcoming runs and occurrences
+// before the job's first run are left out. Points without a result (older
+// answers) count as runs when v > 0.
 function runRowsOf(runs: readonly HistoryPoint[], durations: readonly HistoryPoint[]): RunRow[] {
   const buckets = durations.map((p) => ({ t: Date.parse(p.t), v: p.v })).filter((p) => Number.isFinite(p.t));
   // Max duration over the buckets that overlap [s, s + 30 min].
@@ -68,7 +69,7 @@ function runRowsOf(runs: readonly HistoryPoint[], durations: readonly HistoryPoi
   const rows: RunRow[] = [];
   for (const p of runs) {
     const t = Date.parse(p.t);
-    if (!Number.isFinite(t) || p.result === "upcoming") continue;
+    if (!Number.isFinite(t) || p.result === "upcoming" || p.result === "before-first-run") continue;
     const result = p.result ?? (p.v > 0 ? ((p.failed ?? 0) > 0 ? "failed" : "success") : null);
     if (result === null) continue;
     rows.push({ t, failed: result !== "success", result, durationSec: result === "missed" ? null : durationFor(t) });
@@ -227,6 +228,7 @@ export function createDrawer({ doc, host, source, createChart = createDrawerChar
   function buildRuns(g: DrawerGroup, results: (HistoryPoint[] | null)[], otherCalls: OtherCalls | null) {
     const [runs, durations] = results;
     runRows = runRowsOf(runs ?? [], durations ?? []);
+    const beforeFirst = (runs ?? []).some((p) => p.result === "before-first-run");
     data = [];
     message(runs === null ? "Couldn't load run history. Try again in a minute." : runRows.length ? "" : "No runs recorded in this range.");
     chart = createChart(part<HTMLCanvasElement>("canvas"), {
@@ -261,7 +263,8 @@ ${latest
   .join("")}
 </tbody></table>`;
     part("foot").textContent =
-      "Each run is one scheduled time; the job function's requests in the 30 minutes after it count as that run, and a run without any is missed. Other calls are requests outside those windows. Bar colour shows the result." +
+      (beforeFirst && runRows.length > 0 ? `No runs recorded before ${istDay(runRows[0].t)}. ` : "") +
+      "Each run is one scheduled time; the job function's requests in the 30 minutes after it count as that run, and a run without any after the job's first run is missed. Other calls are requests outside those windows. Bar colour shows the result." +
       (runRows.length > 30 ? " The table lists the latest 30 runs; the CSV has all of them." : "");
   }
 

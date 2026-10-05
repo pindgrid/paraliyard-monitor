@@ -467,6 +467,114 @@ describe("job runs are scheduled occurrences", () => {
   });
 });
 
+describe("job occurrences before the first run", () => {
+  // Scheduled 02:30 IST in September (21:00 UTC the day before).
+  const sep = (day: number) => Date.UTC(2026, 8, day - 1, 21, 0);
+  const iso = (ms: number) => new Date(ms).toISOString();
+  const point = (day: number, result: NonNullable<HistoryResponse["points"][number]["result"]>, requests = 0, failed = 0) => ({
+    t: iso(sep(day)),
+    v: requests,
+    result,
+    requests,
+    failed,
+  });
+
+  function openWith(points: HistoryResponse["points"]) {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const blobs: Blob[] = [];
+    Object.assign(URL, {
+      createObjectURL: (b: Blob) => {
+        blobs.push(b);
+        return "blob:test";
+      },
+      revokeObjectURL: vi.fn(),
+    });
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    const specs: DrawerChartSpec[] = [];
+    const source: HistorySource = {
+      async load(service, metric, range): Promise<HistoryResponse> {
+        const base = { service, metric, range, generatedAt: iso(NOW) };
+        if (metric === "runs") return { ...base, unit: "runs", points, otherCalls: { count: 0, failed: 0 } };
+        return { ...base, unit: "seconds", points: [{ t: iso(sep(18) + 300000), v: 42 }] };
+      },
+    };
+    const own = createDrawer({
+      doc: document,
+      host,
+      source,
+      now: () => NOW,
+      onClose: () => own.close(),
+      createChart: (_canvas, spec) => {
+        specs.push(spec);
+        return { setVisible() {}, setData() {}, destroy() {} };
+      },
+    });
+    own.open("job:scheduler:pyNightlyExport");
+    return { own, host, blobs, specs };
+  }
+
+  const readText = (blob: Blob) =>
+    typeof blob.text === "function"
+      ? blob.text()
+      : new Promise<string>((resolve) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result));
+          reader.readAsText(blob);
+        });
+
+  it("leaves leading before-first-run occurrences out of the bars, table, summary and CSV, with a note", async () => {
+    const { own, host, blobs, specs } = openWith([
+      point(15, "before-first-run"),
+      point(16, "before-first-run"),
+      point(17, "before-first-run"),
+      point(18, "success", 1),
+      point(19, "failed", 1, 1),
+      point(20, "missed"),
+      point(21, "success", 1),
+    ]);
+    await own.settled();
+    // Bars: only the four runs from 18 Sep.
+    expect(specs[0].datasets[0].data.map((p) => p.x)).toEqual([sep(18), sep(19), sep(20), sep(21)]);
+    expect(specs[0].labels).toHaveLength(4);
+    const rows = [...host.querySelectorAll('[data-table="runs"] tbody tr')];
+    expect(rows.map((r) => r.querySelector(".badge")?.textContent)).toEqual(["success", "missed", "failed", "success"]);
+    expect(host.querySelector('[data-result="before-first-run"]')).toBeNull();
+    const heads = [...host.querySelectorAll('[data-table="summary"] thead th')].map((th) => th.textContent);
+    const cells = [...host.querySelectorAll('[data-table="summary"] tbody td')].map((td) => td.textContent);
+    const cell = (name: string) => cells[heads.indexOf(name)];
+    expect(cell("Runs")).toBe("4");
+    expect(cell("Succeeded")).toBe("2");
+    expect(cell("Success rate")).toBe("50%");
+    expect(host.textContent).toContain("No runs recorded before 18 Sep");
+    expect(host.querySelector<HTMLElement>('[data-d="msg"]')!.hidden).toBe(true);
+    host.querySelector<HTMLElement>('[data-d="csv"]')!.click();
+    expect((await readText(blobs[0])).split("\n")).toEqual([
+      "time,result,duration_s",
+      `${iso(sep(18))},success,42`,
+      `${iso(sep(19))},failed,`,
+      `${iso(sep(20))},missed,`,
+      `${iso(sep(21))},success,`,
+    ]);
+    own.destroy();
+  });
+
+  it("with only before-first-run and upcoming occurrences shows no runs and a — success rate", async () => {
+    const { own, host, specs } = openWith([point(15, "before-first-run"), point(16, "before-first-run"), point(17, "upcoming")]);
+    await own.settled();
+    expect(specs[0].datasets[0].data).toEqual([]);
+    expect(host.querySelector('[data-d="msg"]')?.textContent).toBe("No runs recorded in this range.");
+    expect(host.textContent).toContain("No runs recorded in this range");
+    expect(host.textContent).not.toContain("No runs recorded before");
+    const heads = [...host.querySelectorAll('[data-table="summary"] thead th')].map((th) => th.textContent);
+    const cells = [...host.querySelectorAll('[data-table="summary"] tbody td')].map((td) => td.textContent);
+    expect(cells[heads.indexOf("Runs")]).toBe("0");
+    expect(cells[heads.indexOf("Success rate")]).toBe("—");
+    expect(host.querySelectorAll('[data-table="runs"] tbody tr')).toHaveLength(0);
+    own.destroy();
+  });
+});
+
 describe("live append", () => {
   it("adds each refresh to ranges of 6h or less only", async () => {
     drawer.open("fs", { range: "1h" });

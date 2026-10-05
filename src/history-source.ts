@@ -38,7 +38,7 @@ export function isAllowedHistoryTarget(service: string, metric: string): boolean
   return isAllowedPair(service, metric);
 }
 
-const RUN_RESULTS: readonly string[] = ["success", "failed", "missed", "upcoming"] satisfies RunResult[];
+const RUN_RESULTS: readonly string[] = ["success", "failed", "missed", "upcoming", "before-first-run"] satisfies RunResult[];
 
 function isOptionalNumber(value: unknown): boolean {
   return value === undefined || typeof value === "number";
@@ -175,17 +175,22 @@ interface MockRun {
   result: RunResult;
 }
 
-// One mock run per scheduled occurrence in [fromMs, nowMs].
+// One mock run per scheduled occurrence in [fromMs, nowMs]. Like the backend,
+// closed occurrences before the first success or failure are "before-first-run".
 function mockRuns(service: string, fromMs: number, nowMs: number): MockRun[] {
   const job = JOB_SCHEDULES[service];
   if (!job) return [];
-  return occurrencesBetween(job.cron, fromMs, nowMs).map((at) => {
+  const runs = occurrencesBetween(job.cron, fromMs, nowMs).map((at): MockRun => {
     let result: RunResult;
     if (nowMs < at + RUN_WINDOW_MS) result = "upcoming";
     else if (mockRunMissed(service, at)) result = "missed";
     else result = mockRunFailed(service, at) ? "failed" : "success";
     return { at, result };
   });
+  const first = runs.findIndex((r) => r.result === "success" || r.result === "failed");
+  const end = first === -1 ? runs.length : first;
+  for (let i = 0; i < end; i += 1) if (runs[i].result !== "upcoming") runs[i].result = "before-first-run";
+  return runs;
 }
 
 // Mock manual calls outside every run window, at 18:20 IST on some days:
@@ -252,8 +257,9 @@ function mockSchedulerHistory(service: string, metric: string, fromMs: number, n
 // Deterministic sample history: points on the range's alignment grid ending
 // at floor(now / alignment) * alignment, each value seeded by
 // (service, metric, range, t); an aggregate sums its services. Scheduler runs
-// follow the job's cron with some failed and some missed runs, and
-// durationSec has a point for each run that happened. Never fetches.
+// follow the job's cron with some failed and some missed runs (occurrences
+// before the first run are "before-first-run"), and durationSec has a point
+// for each run that happened. Never fetches.
 export function createMockHistorySource(now: () => number = Date.now): HistorySource {
   return {
     async load(service, metric, range) {

@@ -25,7 +25,7 @@ test("runs history keeps the documented keys and adds otherCalls and per-run fie
     assert.deepEqual(Object.keys(p), ["t", "v", "result", "requests", "failed"]);
     assert.equal(new Date(p.t).toISOString(), p.t);
     assert.equal(typeof p.v, "number");
-    assert.ok(["success", "failed", "missed", "upcoming"].includes(p.result), p.result);
+    assert.ok(["success", "failed", "missed", "upcoming", "before-first-run"].includes(p.result), p.result);
     assert.equal(typeof p.requests, "number");
     assert.equal(typeof p.failed, "number");
   }
