@@ -327,6 +327,119 @@ test("/api/metrics is unchanged: 13 calls and the same Cache-Control", async () 
   for (const s of metrics.body.services) assert.ok(s.trends && typeof s.trends === "object", s.id);
 });
 
+const AGGREGATE_QUERIES = [
+  { service: "total:function2", metric: "reqPerMin", unit: "per minute" },
+  { service: "total:function2", metric: "errPerMin", unit: "per minute" },
+  { service: "total:function2", metric: "instances", unit: "instances" },
+  { service: "total:bucket", metric: "bytesStored", unit: "bytes" },
+  { service: "total:hosting", metric: "bytesServed", unit: "bytes per bucket" },
+];
+
+test("each aggregate makes exactly one summed listTimeSeries call", async () => {
+  for (const { service, metric, unit } of AGGREGATE_QUERIES) {
+    const { get, fake } = setup();
+    const res = await get({ service, metric, range: "24h" });
+    assert.equal(res.statusCode, 200, `${service} ${metric}`);
+    assert.deepEqual(Object.keys(res.body), ["service", "metric", "range", "unit", "points", "generatedAt"]);
+    assert.equal(res.body.service, service);
+    assert.equal(res.body.unit, unit);
+    assert.equal(fake.calls.length, 1, `${service} ${metric}`);
+    assert.deepEqual(fake.methods(), ["listTimeSeries"]);
+    const { request, options } = fake.calls[0];
+    assert.equal(request.aggregation.crossSeriesReducer, "REDUCE_SUM");
+    assert.deepEqual(request.aggregation.groupByFields, []);
+    assert.ok(/one_of\(/.test(request.filter), request.filter);
+    assert.equal(options.retry, null);
+    assert.equal(options.autoPaginate, false);
+  }
+});
+
+test("unknown aggregates, other metrics and extra keys get 400 with zero calls", async () => {
+  const { get, fake, clientCreations } = setup();
+  for (const query of [
+    { service: "total:function2", metric: "cpuPct", range: "24h" },
+    { service: "total:function2", metric: "memPct", range: "24h" },
+    { service: "total:firestore", metric: "readsPerMin", range: "24h" },
+    { service: "total:everything", metric: "reqPerMin", range: "24h" },
+    { service: "total:bucket", metric: "reqPerMin", range: "24h" },
+    { service: "total:function2", metric: "reqPerMin", range: "24h", extra: "1" },
+    { service: "total:function2", metric: "reqPerMin", range: "90d" },
+    { service: "function2:pyMintOnCrewClaim", metric: "durationSec", range: "24h" },
+    { service: "hosting:paraliyard", metric: "durationSec", range: "24h" },
+    { service: "total:function2", metric: "durationSec", range: "24h" },
+  ]) {
+    const res = await get(query);
+    assert.equal(res.statusCode, 400, JSON.stringify(query));
+    assert.deepEqual(res.body, { error: "bad request" });
+  }
+  assert.equal(fake.calls.length, 0);
+  assert.equal(clientCreations(), 0);
+});
+
+test("aggregate keys use the same TTL cache and single flight", async () => {
+  const { get, fake, clock } = setup({ delayMs: 5 });
+  const query = { service: "total:function2", metric: "reqPerMin", range: "1h" };
+  const responses = await Promise.all(Array.from({ length: 6 }, () => get(query)));
+  assert.equal(fake.calls.length, 1);
+  for (const res of responses) assert.deepEqual(res.body, responses[0].body);
+  clock.t = START + 59999;
+  await get(query);
+  assert.equal(fake.calls.length, 1);
+  clock.t = START + 60000;
+  await get(query);
+  assert.equal(fake.calls.length, 2);
+  // The aggregate and a single service are cached separately.
+  await get({ service: "function2:pyMintOnCrewClaim", metric: "reqPerMin", range: "1h" });
+  assert.equal(fake.calls.length, 3);
+});
+
+test("the 60/min limit covers aggregate and durationSec keys", async () => {
+  const { get, fake } = setup();
+  const misses = allQueries().filter((q) => q.metric !== "durationSec").slice(0, 60);
+  for (const query of misses) assert.equal((await get(query)).statusCode, 200);
+  assert.equal(fake.calls.length, 60);
+  for (const query of [
+    { service: "total:function2", metric: "reqPerMin", range: "24h" },
+    { service: "total:hosting", metric: "bytesServed", range: "7d" },
+    { service: "scheduler:pyNightlyExport", metric: "durationSec", range: "30d" },
+  ]) {
+    const res = await get(query);
+    assert.equal(res.statusCode, 429, JSON.stringify(query));
+    assert.equal(res.headers["retry-after"], "60");
+  }
+  assert.equal(fake.calls.length, 60);
+});
+
+test("durationSec answers in seconds and runs points carry failed", async () => {
+  const respond = (request) => {
+    const end = Number(request.interval.endTime.seconds) * 1000;
+    const pt = (t, v) => ({ interval: { endTime: { seconds: String(t / 1000), nanos: 0 } }, value: { int64Value: String(v) } });
+    const resource = { labels: { service_name: "pynightlyexport" } };
+    if (metricTypeOf(request.filter) === METRIC_TYPES.RUN_LATENCIES) {
+      return [{ resource, metric: { labels: {} }, points: [{ interval: { endTime: { seconds: String(end / 1000), nanos: 0 } }, value: { doubleValue: 1500 } }] }];
+    }
+    return [
+      { resource, metric: { labels: { response_code_class: "2xx" } }, points: [pt(end, 1), pt(end - 86400000, 1)] },
+      { resource, metric: { labels: { response_code_class: "5xx" } }, points: [pt(end - 86400000, 1)] },
+    ];
+  };
+  const { get, fake } = setup({ respond });
+  const duration = await get({ service: "scheduler:pyNightlyExport", metric: "durationSec", range: "7d" });
+  assert.equal(duration.statusCode, 200);
+  assert.equal(duration.body.unit, "seconds");
+  assert.deepEqual(duration.body.points, [{ t: new Date(START).toISOString(), v: 1.5 }]);
+  const runs = await get({ service: "scheduler:pyNightlyExport", metric: "runs", range: "7d" });
+  assert.deepEqual(runs.body.points, [
+    { t: new Date(START - 86400000).toISOString(), v: 2, failed: 1 },
+    { t: new Date(START).toISOString(), v: 1, failed: 0 },
+  ]);
+  assert.equal(fake.calls.length, 2);
+  assert.deepEqual(fake.calls[1].request.aggregation.groupByFields, [
+    "resource.labels.service_name",
+    "metric.labels.response_code_class",
+  ]);
+});
+
 test("non-GET /api/history gets 405 and no calls", async () => {
   const { get, fake } = setup();
   const res = await get(VALID, "/api/history", "POST");

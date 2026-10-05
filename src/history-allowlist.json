@@ -13,6 +13,11 @@
     "firestore": ["readsPerMin", "writesPerMin", "deletesPerMin"],
     "bucket": ["reqPerMin", "bytesStored"],
     "hosting": ["bytesServed"],
-    "scheduler": ["runs"]
+    "scheduler": ["runs", "durationSec"]
+  },
+  "aggregates": {
+    "total:function2": ["reqPerMin", "errPerMin", "instances"],
+    "total:bucket": ["bytesStored"],
+    "total:hosting": ["bytesServed"]
   }
 }

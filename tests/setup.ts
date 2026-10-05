@@ -7,6 +7,12 @@ vi.mock("../src/charts", () => ({
   createChart: () => ({ update() {}, resetZoom() {}, destroy() {} }),
 }));
 
+// Same for the drawer's Chart.js adapter. Drawer tests that inspect charts
+// pass their own createChart.
+vi.mock("../src/drawer-chart", () => ({
+  createDrawerChart: () => ({ setVisible() {}, setData() {}, destroy() {} }),
+}));
+
 // Tests must never touch the network: any un-stubbed fetch fails loudly.
 globalThis.fetch = (() => {
   throw new Error("network disabled in tests");

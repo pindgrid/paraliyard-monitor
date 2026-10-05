@@ -8,10 +8,12 @@ const { METRIC_TYPES, RESOURCES, SERVICES } = require("../src/constants");
 const {
   HISTORY_RANGES,
   HISTORY_METRICS,
+  AGGREGATES,
   validateHistoryQuery,
   buildHistoryRequest,
   toHistoryPoints,
 } = require("../src/history");
+const { buildRequests } = require("../src/queries");
 
 const NOW = Date.UTC(2026, 0, 1, 12, 0, 0);
 const ALLOWED_TYPES = new Set(Object.values(METRIC_TYPES));
@@ -68,7 +70,8 @@ test("CPU, RAM and gen1 memory use p99 with max, never ALIGN_MEAN", () => {
 
 test("every allowed pair: fixed type, only that service's label, the project name", () => {
   const pairs = allPairs();
-  assert.equal(pairs.length, 9 * 5 + 2 + 3 + 2 * 2 + 2 + 2);
+  // Scheduler jobs: runs and durationSec.
+  assert.equal(pairs.length, 9 * 5 + 2 + 3 + 2 * 2 + 2 + 2 * 2);
   for (const { service, metric } of pairs) {
     for (const range of Object.keys(HISTORY_RANGES)) {
       const request = buildHistoryRequest(service, metric, range, NOW);
@@ -86,7 +89,9 @@ test("every allowed pair: fixed type, only that service's label, the project nam
       for (const other of SERVICES.filter((s) => s.kind === service.kind && s.id !== service.id)) {
         assert.ok(!request.filter.includes(`"${other.resourceLabel}"`), `${where} mentions ${other.id}`);
       }
-      assert.deepEqual(request.aggregation.groupByFields, [`resource.labels.${label}`], where);
+      // runs is also split by response class to report failed runs.
+      const split = metric === "runs" ? ["metric.labels.response_code_class"] : [];
+      assert.deepEqual(request.aggregation.groupByFields, [`resource.labels.${label}`, ...split], where);
     }
   }
 });
@@ -202,4 +207,143 @@ test("units", () => {
   for (const [kind, metrics] of Object.entries(HISTORY_METRICS)) {
     if (kind !== "scheduler") assert.ok(!("runs" in metrics), kind);
   }
+});
+
+const AGGREGATE_SERVICES = {
+  "total:function2": [
+    "pynightlyexport",
+    "pyreadstockistdocs",
+    "pyyardstaffonwrite",
+    "pymintoncrewclaim",
+    "pydeleteaccountonrequest",
+    "pystaffloginonrequest",
+    "pyweeklyaccounts",
+    "pypushonnotification",
+    "pymintonrolerequest",
+  ],
+  "total:bucket": ["mineral-proton-438104-g8-paraliyard", "mineral-proton-438104-g8-yard-backups"],
+  "total:hosting": ["paraliyard.web.app", "preparaliyard.web.app"],
+};
+
+test("aggregates: REDUCE_SUM, no groupBy, one_of over exactly the kind's services", () => {
+  assert.deepEqual(
+    Object.fromEntries(Object.entries(AGGREGATES).map(([id, a]) => [id, [a.kind, ...a.metrics]])),
+    {
+      "total:function2": ["function2", "reqPerMin", "errPerMin", "instances"],
+      "total:bucket": ["bucket", "bytesStored"],
+      "total:hosting": ["hosting", "bytesServed"],
+    },
+  );
+  for (const [id, { kind, metrics }] of Object.entries(AGGREGATES)) {
+    for (const metric of metrics) {
+      for (const range of Object.keys(HISTORY_RANGES)) {
+        const query = validateHistoryQuery({ service: id, metric, range });
+        assert.ok(query, `${id} ${metric} ${range}`);
+        const request = buildHistoryRequest(query.service, metric, range, NOW);
+        const where = `${id} ${metric} ${range}`;
+        assert.equal(request.name, "projects/mineral-proton-438104-g8", where);
+        assert.equal(request.aggregation.crossSeriesReducer, "REDUCE_SUM", where);
+        assert.deepEqual(request.aggregation.groupByFields, [], where);
+        assert.equal(request.aggregation.alignmentPeriod.seconds, HISTORY_RANGES[range].alignmentSeconds, where);
+        const type = /^metric\.type = "([^"]+)"/.exec(request.filter)[1];
+        assert.ok(ALLOWED_TYPES.has(type), where);
+        const { type: resourceType, label } = RESOURCES[kind];
+        assert.ok(request.filter.includes(`resource.type = "${resourceType}"`), where);
+        const labels = AGGREGATE_SERVICES[id].map((v) => `"${v}"`).join(", ");
+        assert.ok(request.filter.includes(`resource.labels.${label} = one_of(${labels})`), where);
+        assert.equal(request.filter.match(/one_of\(/g).length, metric === "errPerMin" ? 2 : 1, where);
+      }
+    }
+  }
+});
+
+test("total:function2 errPerMin keeps the 4xx/5xx clause and the aligners of its metric", () => {
+  const err = buildHistoryRequest(validateHistoryQuery({ service: "total:function2", metric: "errPerMin", range: "24h" }).service, "errPerMin", "24h", NOW);
+  assert.ok(err.filter.endsWith(' AND metric.labels.response_code_class = one_of("4xx", "5xx")'), err.filter);
+  assert.ok(err.filter.includes('resource.labels.location = "asia-south1"'));
+  assert.equal(err.aggregation.perSeriesAligner, "ALIGN_DELTA");
+  const req = buildHistoryRequest(validateHistoryQuery({ service: "total:function2", metric: "reqPerMin", range: "24h" }).service, "reqPerMin", "24h", NOW);
+  assert.ok(!req.filter.includes("response_code_class"));
+  const inst = buildHistoryRequest(validateHistoryQuery({ service: "total:function2", metric: "instances", range: "1h" }).service, "instances", "1h", NOW);
+  assert.equal(inst.aggregation.perSeriesAligner, "ALIGN_MAX");
+  assert.equal(metricTypeOf(inst.filter), METRIC_TYPES.RUN_INSTANCES);
+  const bytes = buildHistoryRequest(validateHistoryQuery({ service: "total:bucket", metric: "bytesStored", range: "7d" }).service, "bytesStored", "7d", NOW);
+  assert.equal(metricTypeOf(bytes.filter), METRIC_TYPES.BUCKET_BYTES);
+  const served = buildHistoryRequest(validateHistoryQuery({ service: "total:hosting", metric: "bytesServed", range: "6h" }).service, "bytesServed", "6h", NOW);
+  assert.equal(metricTypeOf(served.filter), METRIC_TYPES.HOSTING_SENT_BYTES);
+});
+
+function metricTypeOf(filter) {
+  return /^metric\.type = "([^"]+)"/.exec(filter)[1];
+}
+
+test("aggregate queries outside the allowlist are rejected", () => {
+  const invalid = [
+    { service: "total:function2", metric: "cpuPct", range: "24h" },
+    { service: "total:function2", metric: "memPct", range: "24h" },
+    { service: "total:bucket", metric: "reqPerMin", range: "24h" },
+    { service: "total:hosting", metric: "bytesStored", range: "24h" },
+    { service: "total:firestore", metric: "readsPerMin", range: "24h" },
+    { service: "total:function1", metric: "execPerMin", range: "24h" },
+    { service: "total:scheduler", metric: "runs", range: "24h" },
+    { service: "total:", metric: "reqPerMin", range: "24h" },
+    { service: "total:function2", metric: "reqPerMin", range: "2d" },
+    { service: "total:function2", metric: "reqPerMin", range: "24h", extra: "x" },
+    { service: "total:function2", metric: "durationSec", range: "24h" },
+    { service: "function2:pyMintOnCrewClaim", metric: "durationSec", range: "24h" },
+    { service: "firestore:yard", metric: "durationSec", range: "24h" },
+    { service: "function1:pyCleanupOnAuthDelete", metric: "durationSec", range: "24h" },
+    { service: "hasOwnProperty", metric: "reqPerMin", range: "24h" },
+  ];
+  for (const query of invalid) assert.equal(validateHistoryQuery(query), null, JSON.stringify(query));
+});
+
+test("scheduler durationSec reads request_latencies p99 per job function", () => {
+  for (const id of ["scheduler:pyNightlyExport", "scheduler:pyWeeklyAccounts"]) {
+    const query = validateHistoryQuery({ service: id, metric: "durationSec", range: "30d" });
+    assert.ok(query, id);
+    const request = buildHistoryRequest(query.service, "durationSec", "30d", NOW);
+    assert.equal(metricTypeOf(request.filter), "run.googleapis.com/request_latencies");
+    assert.equal(METRIC_TYPES.RUN_LATENCIES, "run.googleapis.com/request_latencies");
+    assert.ok(request.filter.includes(`resource.labels.service_name = "${byId(id).resourceLabel}"`));
+    assert.ok(request.filter.includes('resource.type = "cloud_run_revision"'));
+    assert.equal(request.aggregation.perSeriesAligner, "ALIGN_PERCENTILE_99");
+    assert.equal(request.aggregation.crossSeriesReducer, "REDUCE_MAX");
+    assert.deepEqual(request.aggregation.groupByFields, ["resource.labels.service_name"]);
+  }
+  assert.equal(HISTORY_METRICS.scheduler.durationSec.unit, "seconds");
+  // 1500 ms is 1.5 s.
+  assert.deepEqual(toHistoryPoints(series([1500, 500], 3600000), "durationSec", "7d"), [
+    { t: new Date(NOW - 3600000).toISOString(), v: 0.5 },
+    { t: new Date(NOW).toISOString(), v: 1.5 },
+  ]);
+});
+
+test("/api/metrics never queries request_latencies and keeps 13 keys", () => {
+  for (const windowKey of ["1h", "6h"]) {
+    const requests = buildRequests(windowKey, NOW);
+    assert.equal(requests.length, 13);
+    for (const { request } of requests) assert.ok(!request.filter.includes("request_latencies"), request.filter);
+  }
+});
+
+function classSeries(values, stepMs, cls) {
+  const [s] = series(values, stepMs, { service_name: "pynightlyexport" });
+  return { ...s, metric: { labels: { response_code_class: cls } } };
+}
+
+test("runs points carry failed (non-2xx) next to the unchanged total", () => {
+  const step = 3600000;
+  const list = [classSeries([1, 0, 1], step, "2xx"), classSeries([0, 0, 2], step, "5xx"), classSeries([1], step, "4xx")];
+  const points = toHistoryPoints(list, "runs", "7d");
+  assert.deepEqual(points, [
+    { t: new Date(NOW - 2 * step).toISOString(), v: 3, failed: 2 },
+    { t: new Date(NOW - step).toISOString(), v: 0, failed: 0 },
+    { t: new Date(NOW).toISOString(), v: 2, failed: 1 },
+  ]);
+  // v equals the iteration-4 total: every class summed per bucket.
+  const { trendOf } = require("../src/aggregate");
+  assert.deepEqual(points.map((p) => ({ t: p.t, v: p.v })), trendOf([list]));
+  // Only runs carries failed.
+  for (const p of toHistoryPoints(series([3], 300000), "readsPerMin", "24h")) assert.deepEqual(Object.keys(p), ["t", "v"]);
 });

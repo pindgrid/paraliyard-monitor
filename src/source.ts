@@ -1,4 +1,7 @@
+import { mockRecent } from "./mock/recent";
 import sample from "./mock/sample-metrics.json";
+import { nextRunAt } from "./schedule";
+import { JOB_SCHEDULES } from "./services";
 import type { MetricRecord, MetricsResponse } from "./types";
 
 export interface MetricsSource {
@@ -21,6 +24,21 @@ function shiftAtKeys(metrics: MetricRecord, offsetMs: number): void {
   }
 }
 
+// Adds what the live API adds per service: the 30-minute series and, for
+// scheduler jobs, the schedule and next run.
+function addRecentAndSchedule(data: MetricsResponse, nowMs: number): void {
+  for (const s of data.services) {
+    s.recent = mockRecent(s.id, s.kind, nowMs);
+    const job = JOB_SCHEDULES[s.id];
+    if (job) {
+      s.schedule = job.schedule;
+      s.cron = job.cron;
+      s.timeZone = job.timeZone;
+      s.nextRun = new Date(nextRunAt(job.cron, nowMs)).toISOString();
+    }
+  }
+}
+
 // Bundled sample data, moved in time so the newest point is "now". Never fetches.
 export function createMockSource(now: () => number = Date.now): MetricsSource {
   return {
@@ -28,7 +46,9 @@ export function createMockSource(now: () => number = Date.now): MetricsSource {
       const data = JSON.parse(JSON.stringify(sample)) as MetricsResponse;
       const times = data.services.flatMap((s) => s.trend.points.map((p) => Date.parse(p.t)));
       const newest = times.length > 0 ? Math.max(...times) : Date.parse(data.generatedAt);
-      const offset = now() - newest;
+      const nowMs = now();
+      const offset = nowMs - newest;
+      addRecentAndSchedule(data, nowMs);
       data.generatedAt = shift(data.generatedAt, offset) as string;
       for (const s of data.services) {
         for (const p of s.trend.points) p.t = shift(p.t, offset) as string;

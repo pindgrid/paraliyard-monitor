@@ -1,124 +1,216 @@
 import { loadConfig } from "./config";
+import { renderDashboard, type LiveState } from "./dashboard";
+import { bindOpeners, createDrawer } from "./drawer";
+import { groupFor } from "./drawer-groups";
+import { drawerPath, isHistoryPath, parseDrawerRoute } from "./drawer-route";
 import { createLiveHistorySource, createMockHistorySource } from "./history-source";
-import { openHistoryView, type HistoryRoute, type HistoryView } from "./history-view";
-import { createOverview } from "./overview";
 import { createPoller, type Poller } from "./poller";
-import { renderDashboard } from "./render";
-import { historyPath, parseRoute } from "./routes";
+import { isRefreshSeconds, loadRefresh, pollIntervalMs, saveRefresh, snapRefresh } from "./refresh";
 import { SERVICES } from "./services";
 import { createLiveSource, createMockSource } from "./source";
-import type { Config, MetricsResponse } from "./types";
+import type { Config, HistoryPoint, HistoryRange, MetricsResponse } from "./types";
 
 // Open tabs in live mode re-read /config.json this often to honour the kill switch.
 export const CONFIG_RECHECK_MS = 10 * 60 * 1000;
+// Scheduler runs history (the day squares) is reloaded at most this often.
+export const RUNS_RELOAD_MS = 10 * 60 * 1000;
+export const RUNS_RANGE: HistoryRange = "30d";
+// Same cap as the poller's backoff.
+const MAX_RETRY_MS = 600000;
+
+type RefreshStorage = Pick<Storage, "getItem" | "setItem">;
 
 export interface AppOptions {
   root: HTMLElement;
   fetchFn?: typeof fetch;
   doc?: Document;
   config?: Config;
+  // Where the refresh choice is kept (default: localStorage, if reachable).
+  storage?: RefreshStorage | null;
 }
 
 export interface AppHandle {
   stop(): void;
 }
 
-export async function startApp({ root, fetchFn = fetch, doc = document, config }: AppOptions): Promise<AppHandle> {
-  const cfg = config ?? (await loadConfig(fetchFn));
-  const renderPaused = () => renderDashboard(root, SERVICES, null, { state: "paused" });
+function defaultStorage(win: Window): RefreshStorage | null {
+  try {
+    return win.localStorage;
+  } catch {
+    return null;
+  }
+}
 
+export async function startApp({ root, fetchFn = fetch, doc = document, config, storage }: AppOptions): Promise<AppHandle> {
+  const cfg = config ?? (await loadConfig(fetchFn));
+  const win = doc.defaultView ?? window;
+  const store = storage === undefined ? defaultStorage(win) : storage;
+  let refreshSeconds = loadRefresh(store, snapRefresh(cfg.refreshSeconds));
+
+  // Kill switch: zero requests, no drawer.
+  const renderOff = () => {
+    if (isHistoryPath(win.location.pathname)) win.history.replaceState(null, "", "/");
+    renderDashboard(root, null, { state: "paused", mock: false, off: true, refreshSeconds, paused: true, nowMs: Date.now() });
+  };
   if (cfg.mode === "off") {
-    renderPaused();
+    renderOff();
     return { stop() {} };
   }
 
   const mock = cfg.mode === "mock";
   const source = mock ? createMockSource() : createLiveSource(fetchFn);
-  const pollers: Poller[] = [];
-  let stopped = false;
-  let last: MetricsResponse | null = null;
-
-  const win = doc.defaultView ?? window;
   const historySource = mock ? createMockHistorySource() : createLiveHistorySource(fetchFn);
-  let view: HistoryView | null = null;
+
+  let last: MetricsResponse | null = null;
+  let state: LiveState = "loading";
+  let paused = false;
+  let stopped = false;
+  let retrySeconds: number | undefined;
+  let runs: Record<string, readonly HistoryPoint[] | null> = {};
+  let lastRunsLoadAt: number | null = null;
+  let lastFetchAt: number | null = null;
+  let poller: Poller | null = null;
+  let configPoller: Poller | null = null;
   // History entries this app pushed since the overview was last shown.
   let pushedDepth = 0;
 
-  const closeView = () => {
-    view?.close();
-    view = null;
-  };
-
-  const stop = () => {
-    stopped = true;
-    for (const poller of pollers) poller.stop();
-    closeView();
-    win.removeEventListener("popstate", onPopState);
-    doc.removeEventListener("keydown", onKeydown);
-  };
-
-  // Built once: status and tables, the overview charts, the history view.
-  const tablesHost = doc.createElement("div");
-  tablesHost.className = "tables";
-  const chartsHost = doc.createElement("section");
-  chartsHost.className = "charts";
-  chartsHost.setAttribute("aria-label", "Overview charts");
-  const historyHost = doc.createElement("div");
-  historyHost.className = "history";
-  historyHost.hidden = true;
-  root.replaceChildren(tablesHost, chartsHost, historyHost);
-
-  function showOverview() {
-    closeView();
-    tablesHost.hidden = false;
-    chartsHost.hidden = false;
-    historyHost.hidden = true;
-  }
-
-  function showHistory(route: HistoryRoute) {
-    closeView();
-    tablesHost.hidden = true;
-    chartsHost.hidden = true;
-    view = openHistoryView(historyHost, {
-      route,
-      source: historySource,
-      refreshSeconds: cfg.refreshSeconds,
-      doc,
-      onClose: closeHistory,
-      onRange: (range) => navigate(historyPath(route.service, route.metric, range)),
+  const render = () =>
+    renderDashboard(root, last, {
+      state,
+      mock,
+      stale: Boolean(last?.stale),
+      retrySeconds,
+      refreshSeconds,
+      paused,
+      nowMs: Date.now(),
+      runs,
     });
+
+  const drawer = createDrawer({
+    doc,
+    host: doc.body,
+    source: historySource,
+    onClose: closeDrawer,
+    onRange: (range) => {
+      const current = drawer.current();
+      if (current) win.history.replaceState(null, "", drawerPath(current.group.target, range));
+    },
+  });
+
+  // Day squares: both jobs' runs, at most once per RUNS_RELOAD_MS (failed or not).
+  async function maybeLoadRuns() {
+    const t = Date.now();
+    if (lastRunsLoadAt !== null && t - lastRunsLoadAt < RUNS_RELOAD_MS) return;
+    lastRunsLoadAt = t;
+    const jobs = SERVICES.filter((s) => s.kind === "scheduler");
+    const results = await Promise.all(
+      jobs.map((j) =>
+        historySource.load(j.id, "runs", RUNS_RANGE).then(
+          (res) => res.points,
+          () => null,
+        ),
+      ),
+    );
+    if (stopped) return;
+    runs = Object.fromEntries(jobs.map((j, i) => [j.id, results[i] ?? runs[j.id] ?? null]));
+    render();
   }
 
-  // Shows whatever the current URL names; an invalid history URL becomes "/".
+  async function tick() {
+    lastFetchAt = Date.now();
+    try {
+      const data = await source.load();
+      if (stopped) return;
+      last = data;
+      state = "live";
+      retrySeconds = undefined;
+      render();
+      drawer.appendLive(data);
+      void maybeLoadRuns();
+    } catch (err) {
+      if (!stopped) {
+        state = "offline";
+        // The poller doubles its delay after this failure.
+        const current = poller ? poller.currentDelay() : pollIntervalMs(refreshSeconds);
+        retrySeconds = Math.round(Math.min(current * 2, MAX_RETRY_MS) / 1000);
+        render();
+      }
+      throw err;
+    }
+  }
+
+  // (Re)starts polling at the chosen interval, never sooner than one interval
+  // after the previous request.
+  function startPolling() {
+    poller?.stop();
+    const intervalMs = pollIntervalMs(refreshSeconds);
+    const elapsed = lastFetchAt === null ? Infinity : Date.now() - lastFetchAt;
+    poller = createPoller({ intervalMs, doc, task: tick, runImmediately: elapsed >= intervalMs });
+    poller.start();
+  }
+
+  function setPaused(next: boolean) {
+    if (stopped || next === paused) return;
+    paused = next;
+    if (paused) {
+      poller?.stop();
+      state = "paused";
+    } else {
+      state = last ? "live" : "loading";
+      startPolling();
+    }
+    render();
+  }
+
+  function setRefresh(seconds: number) {
+    if (stopped || !isRefreshSeconds(seconds) || seconds === refreshSeconds) return;
+    refreshSeconds = seconds;
+    saveRefresh(store, seconds);
+    if (!paused) startPolling();
+    render();
+  }
+
+  function onChange(event: Event) {
+    const select = (event.target as Element | null)?.closest?.('select[data-action="refresh"]') as HTMLSelectElement | null;
+    if (select) setRefresh(Number(select.value));
+  }
+
+  function onClick(event: MouseEvent) {
+    if ((event.target as Element | null)?.closest?.('button[data-action="pause"]')) setPaused(!paused);
+  }
+
+  // Shows whatever the URL names: a drawer over the page, or the page alone.
+  // An invalid /history URL becomes "/".
   function route() {
     if (stopped) return;
-    const current = parseRoute(win.location.pathname, win.location.search);
-    if (current.view === "history") {
-      showHistory(current);
+    const current = parseDrawerRoute(win.location.pathname, win.location.search);
+    if (current) {
+      drawer.open(current.opener, { range: current.range, metric: current.metric });
       return;
     }
-    if (win.location.pathname.startsWith("/history")) win.history.replaceState(null, "", "/");
+    if (isHistoryPath(win.location.pathname)) win.history.replaceState(null, "", "/");
     pushedDepth = 0;
-    showOverview();
+    drawer.close();
   }
 
-  function navigate(path: string) {
-    if (stopped) return;
-    win.history.pushState(null, "", path);
+  function openFromPage(opener: string) {
+    const group = groupFor(opener);
+    if (stopped || !group || drawer.isOpen()) return;
+    win.history.pushState(null, "", drawerPath(group.target, group.defaultRange));
     pushedDepth += 1;
-    route();
+    drawer.open(opener);
   }
 
-  // Back to the overview: undo our own pushes, otherwise replace the URL.
-  function closeHistory() {
+  // Back to the page: undo our own pushes, otherwise replace the URL.
+  function closeDrawer() {
     if (pushedDepth > 0) {
       const depth = pushedDepth;
       pushedDepth = 0;
-      showOverview();
+      drawer.close();
       win.history.go(-depth);
     } else {
       win.history.replaceState(null, "", "/");
-      route();
+      drawer.close();
     }
   }
 
@@ -127,80 +219,42 @@ export async function startApp({ root, fetchFn = fetch, doc = document, config }
     route();
   }
 
-  function onKeydown(event: KeyboardEvent) {
-    if (event.key === "Escape" && view) closeHistory();
+  const unbindOpeners = bindOpeners(root, (opener) => openFromPage(opener));
+  root.addEventListener("change", onChange);
+  root.addEventListener("click", onClick);
+  win.addEventListener("popstate", onPopState);
+
+  function stop() {
+    if (stopped) return;
+    stopped = true;
+    poller?.stop();
+    configPoller?.stop();
+    unbindOpeners();
+    root.removeEventListener("change", onChange);
+    root.removeEventListener("click", onClick);
+    win.removeEventListener("popstate", onPopState);
+    drawer.destroy();
   }
 
-  win.addEventListener("popstate", onPopState);
-  doc.addEventListener("keydown", onKeydown);
-
-  const overview = createOverview(chartsHost, doc, { open: (service, metric) => navigate(historyPath(service, metric)) });
-
-  // Table cells and sparklines link to the history view.
-  root.addEventListener("click", (event) => {
-    if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
-      return;
-    }
-    const link = (event.target as Element | null)?.closest?.("a[data-history]");
-    const href = link?.getAttribute("href");
-    if (!link || !href || !root.contains(link)) return;
-    event.preventDefault();
-    navigate(href);
-  });
-
-  const updateCharts = (data: MetricsResponse) => {
-    try {
-      overview.update(data);
-    } catch {
-      // A chart problem must never hide the tables or change the status.
-    }
-  };
-
-  renderDashboard(tablesHost, SERVICES, null, { state: "loading", mock });
-
-  pollers.push(
-    createPoller({
-      intervalMs: cfg.refreshSeconds * 1000,
-      doc,
-      task: async () => {
-        try {
-          const data = await source.load();
-          if (stopped) return;
-          last = data;
-          renderDashboard(tablesHost, SERVICES, data, {
-            state: data.stale ? "stale" : "ok",
-            updatedAt: data.generatedAt,
-            mock,
-          });
-          updateCharts(data);
-        } catch (err) {
-          if (!stopped) {
-            renderDashboard(tablesHost, SERVICES, last, { state: "error", updatedAt: last?.generatedAt ?? null, mock });
-          }
-          throw err;
-        }
-      },
-    }),
-  );
+  render();
+  startPolling();
 
   if (cfg.mode === "live") {
-    pollers.push(
-      createPoller({
-        intervalMs: CONFIG_RECHECK_MS,
-        doc,
-        runImmediately: false,
-        task: async () => {
-          const next = await loadConfig(fetchFn);
-          if (next.mode === "off" && !stopped) {
-            stop();
-            renderPaused();
-          }
-        },
-      }),
-    );
+    configPoller = createPoller({
+      intervalMs: CONFIG_RECHECK_MS,
+      doc,
+      runImmediately: false,
+      task: async () => {
+        const next = await loadConfig(fetchFn);
+        if (next.mode === "off" && !stopped) {
+          stop();
+          renderOff();
+        }
+      },
+    });
+    configPoller.start();
   }
 
-  for (const poller of pollers) poller.start();
   route();
   return { stop };
 }

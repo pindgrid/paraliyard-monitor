@@ -7,6 +7,13 @@ const assert = require("node:assert/strict");
 const { createHandler } = require("../src/handler");
 const { createFakeClient } = require("./fake-client");
 const fixture = require("../../src/mock/sample-metrics.json");
+const { SCHEDULE_KEYS } = require("../src/aggregate");
+
+// Fields added after the fixture's keys in iteration 5. The mock source adds
+// the same fields to the fixture at load time (src/source.ts).
+function addedKeys(kind) {
+  return kind === "scheduler" ? ["recent", ...SCHEDULE_KEYS] : ["recent"];
+}
 
 async function livePayload() {
   const fake = createFakeClient();
@@ -38,7 +45,7 @@ test("handler payload matches the frontend fixture shape", async () => {
   assert.deepEqual(payload.services.map((s) => s.id), fixture.services.map((s) => s.id));
   for (const [i, service] of payload.services.entries()) {
     const expected = fixture.services[i];
-    assert.deepEqual(Object.keys(service), Object.keys(expected));
+    assert.deepEqual(Object.keys(service), [...Object.keys(expected), ...addedKeys(expected.kind)]);
     assert.equal(service.kind, expected.kind);
     assert.equal(service.name, expected.name);
     assert.deepEqual(Object.keys(service.metrics), Object.keys(expected.metrics), service.id);

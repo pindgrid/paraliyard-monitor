@@ -26,7 +26,31 @@ export const SERVICES: readonly ServiceInfo[] = [
   service("scheduler", "pyWeeklyAccounts"),
 ];
 
-export const KIND_ORDER: readonly Kind[] = ["function2", "function1", "firestore", "bucket", "hosting", "scheduler"];
+export interface JobSchedule {
+  cron: string;
+  timeZone: string;
+  schedule: string;
+}
+
+// Same values as functions/src/constants.js, copied from data/paraliyard-services.csv.
+export const JOB_SCHEDULES: Readonly<Record<string, JobSchedule>> = {
+  "scheduler:pyNightlyExport": { cron: "30 2 * * *", timeZone: "Asia/Kolkata", schedule: "Daily 02:30 IST" },
+  "scheduler:pyWeeklyAccounts": { cron: "0 3 * * 0", timeZone: "Asia/Kolkata", schedule: "Sundays 03:00 IST" },
+};
+
+// Per-minute series in each service's `recent`, per kind (same as functions/src/aggregate.js).
+export const RECENT_KEYS: Record<Kind, readonly string[]> = {
+  function2: ["reqPerMin", "errPerMin"],
+  function1: ["execPerMin"],
+  firestore: ["readsPerMin", "writesPerMin", "deletesPerMin"],
+  bucket: ["reqPerMin"],
+  hosting: ["bytesServed"],
+  scheduler: [],
+};
+
+export const PROJECT_ID = "mineral-proton-438104-g8";
+
+export const KIND_ORDER: readonly Kind[] =["function2", "function1", "firestore", "bucket", "hosting", "scheduler"];
 
 export const KIND_LABELS: Record<Kind, string> = {
   function2: "Cloud Functions (2nd gen)",

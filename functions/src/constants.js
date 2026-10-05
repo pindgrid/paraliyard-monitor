@@ -74,6 +74,8 @@ const METRIC_TYPES = Object.freeze({
   BUCKET_BYTES: "storage.googleapis.com/storage/total_bytes",
   // assumption: confirm in Metrics Explorer
   HOSTING_SENT_BYTES: "firebasehosting.googleapis.com/network/sent_bytes_count",
+  // assumption: confirm in Metrics Explorer (history only: scheduler job duration, in ms)
+  RUN_LATENCIES: "run.googleapis.com/request_latencies",
 });
 
 function service(kind, name, resourceLabel) {
@@ -115,6 +117,14 @@ const SERVICES = Object.freeze([
   job("pyWeeklyAccounts"),
 ]);
 
+const JOB_TIME_ZONE = "Asia/Kolkata";
+
+// Cloud Scheduler cron per job, copied from data/paraliyard-services.csv.
+const JOB_SCHEDULES = Object.freeze({
+  "scheduler:pyNightlyExport": Object.freeze({ cron: "30 2 * * *", timeZone: JOB_TIME_ZONE, schedule: "Daily 02:30 IST" }),
+  "scheduler:pyWeeklyAccounts": Object.freeze({ cron: "0 3 * * 0", timeZone: JOB_TIME_ZONE, schedule: "Sundays 03:00 IST" }),
+});
+
 module.exports = {
   PROJECT_ID,
   PROJECT_NAME,
@@ -135,4 +145,5 @@ module.exports = {
   RESOURCES,
   METRIC_TYPES,
   SERVICES,
+  JOB_SCHEDULES,
 };

@@ -73,6 +73,15 @@ export interface TrendPoint {
   v: number;
 }
 
+// Per-minute values for the last 30 minutes. Slot i covers
+// [from + i * stepSeconds, from + (i + 1) * stepSeconds]; a series is null
+// when its call failed and 0 for a minute without data.
+export interface RecentSeries {
+  from: string;
+  stepSeconds: number;
+  series: Record<string, (number | null)[] | null>;
+}
+
 export interface ServiceMetrics {
   id: string;
   kind: Kind;
@@ -81,6 +90,12 @@ export interface ServiceMetrics {
   trend: { points: TrendPoint[] };
   // Per-metric trends: null when the call failed, [] for a gauge without samples.
   trends: Record<string, TrendPoint[] | null>;
+  recent?: RecentSeries;
+  // Scheduler jobs only.
+  schedule?: string;
+  cron?: string;
+  timeZone?: string;
+  nextRun?: string;
 }
 
 export interface MetricsResponse {
@@ -93,13 +108,21 @@ export interface MetricsResponse {
 
 export type HistoryRange = "1h" | "6h" | "24h" | "7d" | "30d" | "6w";
 
+// Totals over every service of one kind (GET /api/history only).
+export type AggregateId = "total:function2" | "total:bucket" | "total:hosting";
+
+// A history point; scheduler runs also carry the non-2xx part as failed.
+export interface HistoryPoint extends TrendPoint {
+  failed?: number;
+}
+
 // GET /api/history response.
 export interface HistoryResponse {
   service: string;
   metric: string;
   range: HistoryRange;
   unit: string;
-  points: TrendPoint[];
+  points: HistoryPoint[];
   generatedAt: string;
   stale?: boolean;
 }

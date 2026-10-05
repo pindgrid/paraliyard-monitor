@@ -1,12 +1,12 @@
 "use strict";
 
-const { WINDOWS, GEN1_MEMORY_BYTES, KINDS, RESOURCES, SERVICES, JOB_SCHEDULES } = require("./constants");
-const { normalizeWindow } = require("./queries");
-const { nextRunAt } = require("./schedule");
+// Frozen copy of functions/src/aggregate.js as of iteration 4 (before the
+// `recent` and schedule fields). No tests live here: aggregate-recent.test.js
+// deep-compares the current payload, minus the added fields, against it.
 
-// Metric keys per kind, in display order, then the *At keys. Unknown values
-// (failed or missing call) are always null; a successful call with no data
-// is "idle" for gauges, 0 for counts and "none" for the scheduler lastResult.
+const { WINDOWS, GEN1_MEMORY_BYTES, KINDS, RESOURCES, SERVICES } = require("../../src/constants");
+const { normalizeWindow } = require("../../src/queries");
+
 const METRIC_KEYS = Object.freeze({
   function2: Object.freeze(["cpuPct", "memPct", "reqPerMin", "errPerMin", "instances", "cpuAt", "memAt"]),
   function1: Object.freeze(["cpuPct", "execPerMin", "memBytes", "memPct", "memAt"]),
@@ -16,43 +16,9 @@ const METRIC_KEYS = Object.freeze({
   scheduler: Object.freeze(["lastRunAt", "lastResult"]),
 });
 
-// Per-metric trend keys per kind, in payload order. Built only from the
-// existing 13 results: null when the call failed; counts are a flat 0 line and
-// gauges are [] when the call succeeded without points.
-const TREND_KEYS = Object.freeze({
-  function2: Object.freeze(["reqPerMin", "errPerMin", "cpuPct", "memPct", "instances"]),
-  function1: Object.freeze(["execPerMin", "memBytes"]),
-  firestore: Object.freeze(["readsPerMin", "writesPerMin", "deletesPerMin"]),
-  bucket: Object.freeze(["reqPerMin", "bytesStored"]),
-  hosting: Object.freeze(["bytesServed"]),
-  scheduler: Object.freeze(["runs"]),
-});
-
-// Per-minute series for the last RECENT_SLOTS minutes, per kind. Built only
-// from the existing 13 results: null when the call failed, 0 for a minute
-// without points when it succeeded.
-const RECENT_KEYS = Object.freeze({
-  function2: Object.freeze(["reqPerMin", "errPerMin"]),
-  function1: Object.freeze(["execPerMin"]),
-  firestore: Object.freeze(["readsPerMin", "writesPerMin", "deletesPerMin"]),
-  bucket: Object.freeze(["reqPerMin"]),
-  hosting: Object.freeze(["bytesServed"]),
-  scheduler: Object.freeze([]),
-});
-
-const RECENT_SLOTS = 30;
-const RECENT_STEP_MS = 60000;
-
-// Fields added to scheduler services after `recent`.
-const SCHEDULE_KEYS = Object.freeze(["schedule", "cron", "timeZone", "nextRun"]);
-
 const MAX_KEYS = new Set(["cpuPct", "memPct"]);
-
-// Time of the latest value for each MAX key.
 const AT_KEYS = Object.freeze({ cpuAt: "cpuPct", memAt: "memPct" });
-
 const IDLE = "idle";
-// lastResult when the scheduler call succeeded but the job had no run in the lookback.
 const NO_RUN = "none";
 
 function toNumber(value) {
@@ -93,8 +59,6 @@ function pointsOf(seriesList) {
   return out;
 }
 
-// Series for one service: null when the call failed or is missing, otherwise
-// the matching series (empty when the call succeeded with nothing for it).
 function seriesFor(results, key, service) {
   const result = results[key];
   if (!result || !result.ok || !Array.isArray(result.series)) return null;
@@ -104,7 +68,6 @@ function seriesFor(results, key, service) {
   );
 }
 
-// Newest point anywhere in the list, or null when there is none.
 function newestPoint(seriesList) {
   if (!seriesList) return null;
   let best = null;
@@ -112,8 +75,6 @@ function newestPoint(seriesList) {
   return best === null ? null : { t: best.t, v: best.v };
 }
 
-// Latest gauge value and its time: null when the call failed, "idle" when it
-// succeeded without points.
 function gauge(seriesList, factor) {
   if (!seriesList) return { value: null, at: null };
   const point = newestPoint(seriesList);
@@ -121,20 +82,17 @@ function gauge(seriesList, factor) {
   return { value: point.v * factor, at: new Date(point.t).toISOString() };
 }
 
-// Sum per minute: null when the call failed, 0 when it succeeded without points.
 function countPerMinute(seriesList, windowSeconds) {
   if (!seriesList) return null;
   return (sumOf(seriesList) || 0) / (windowSeconds / 60);
 }
 
-// Latest count: null when the call failed, 0 when it succeeded without points.
 function latestCount(seriesList) {
   if (!seriesList) return null;
   const value = latest(seriesList);
   return value === null ? 0 : value;
 }
 
-// Trend points, or a flat zero line when every input call succeeded without points.
 function trendOrFlat(seriesLists, windowSeconds, nowMs) {
   const points = trendOf(seriesLists);
   if (points.length > 0 || seriesLists.some((list) => !list)) return points;
@@ -160,7 +118,6 @@ function sumOf(seriesList) {
   return points.reduce((acc, p) => acc + p.v, 0);
 }
 
-// Sums aligned points that share a timestamp and sorts them by time.
 function trendOf(seriesLists, sinceMs) {
   const byTime = new Map();
   for (const seriesList of seriesLists) {
@@ -180,36 +137,15 @@ function withLabel(seriesList, label, values) {
   return seriesList.filter((s) => values.includes(s.metric && s.metric.labels && s.metric.labels[label]));
 }
 
-// Count trend: null when the call failed, a flat zero line when it succeeded without points.
 function countTrend(seriesList, windowSeconds, nowMs, sinceMs) {
   if (!seriesList) return null;
   const points = trendOf([seriesList], sinceMs);
   return points.length > 0 ? points : trendOrFlat([[]], windowSeconds, nowMs);
 }
 
-// Gauge trend: null when the call failed, [] when it succeeded without points.
 function gaugeTrend(seriesList, factor) {
   if (!seriesList) return null;
   return trendOf([seriesList]).map((p) => ({ t: p.t, v: p.v * factor }));
-}
-
-function recentAnchor(nowMs) {
-  return Math.floor(nowMs / RECENT_STEP_MS) * RECENT_STEP_MS;
-}
-
-// RECENT_SLOTS per-minute sums. Slot i covers the minute ending at
-// anchor - (RECENT_SLOTS - 1 - i) minutes; a point goes to the slot whose
-// minute holds its end time. null when the call failed.
-function recentSeries(seriesList, nowMs) {
-  if (!seriesList) return null;
-  const anchor = recentAnchor(nowMs);
-  const slots = new Array(RECENT_SLOTS).fill(0);
-  for (const p of pointsOf(seriesList)) {
-    if (p.t > anchor) continue;
-    const i = RECENT_SLOTS - 1 - Math.floor((anchor - p.t) / RECENT_STEP_MS);
-    if (i >= 0) slots[i] += p.v;
-  }
-  return slots;
 }
 
 function function2Metrics(results, service, windowSeconds, nowMs) {
@@ -243,10 +179,6 @@ function function2Metrics(results, service, windowSeconds, nowMs) {
       memPct: gaugeTrend(memSeries, 100),
       instances: gaugeTrend(instances, 1),
     },
-    recent: {
-      reqPerMin: recentSeries(requests, nowMs),
-      errPerMin: recentSeries(errors, nowMs),
-    },
   };
 }
 
@@ -256,7 +188,6 @@ function function1Metrics(results, service, windowSeconds, nowMs) {
   const mem = gauge(memSeries, 1);
   return {
     metrics: {
-      // 1st gen functions do not report CPU utilisation.
       cpuPct: null,
       execPerMin: countPerMinute(executions, windowSeconds),
       memBytes: mem.value,
@@ -268,7 +199,6 @@ function function1Metrics(results, service, windowSeconds, nowMs) {
       execPerMin: countTrend(executions, windowSeconds, nowMs),
       memBytes: gaugeTrend(memSeries, 1),
     },
-    recent: { execPerMin: recentSeries(executions, nowMs) },
   };
 }
 
@@ -288,11 +218,6 @@ function firestoreMetrics(results, service, windowSeconds, nowMs) {
       writesPerMin: countTrend(writes, windowSeconds, nowMs),
       deletesPerMin: countTrend(deletes, windowSeconds, nowMs),
     },
-    recent: {
-      readsPerMin: recentSeries(reads, nowMs),
-      writesPerMin: recentSeries(writes, nowMs),
-      deletesPerMin: recentSeries(deletes, nowMs),
-    },
   };
 }
 
@@ -309,7 +234,6 @@ function bucketMetrics(results, service, windowSeconds, nowMs) {
       reqPerMin: countTrend(requests, windowSeconds, nowMs),
       bytesStored: gaugeTrend(bytes, 1),
     },
-    recent: { reqPerMin: recentSeries(requests, nowMs) },
   };
 }
 
@@ -317,18 +241,13 @@ function hostingMetrics(results, service, windowSeconds, nowMs) {
   const sent = seriesFor(results, "hosting.sentBytes", service);
   return {
     metrics: {
-      // Bytes served: null when the call failed, 0 when it succeeded without points.
       bytesServed: sent ? sumOf(sent) || 0 : null,
     },
     points: trendOrFlat([sent], windowSeconds, nowMs),
     trends: { bytesServed: countTrend(sent, windowSeconds, nowMs) },
-    recent: { bytesServed: recentSeries(sent, nowMs) },
   };
 }
 
-// Last run from the job function's request_count: null when the call failed,
-// "none" when it succeeded without requests in the lookback. A run succeeded
-// when every response class with requests at the newest time is 2xx.
 function schedulerMetrics(results, service, windowSeconds, nowMs) {
   const runs = seriesFor(results, "scheduler.runs", service);
   let lastRunAt = null;
@@ -348,7 +267,6 @@ function schedulerMetrics(results, service, windowSeconds, nowMs) {
     metrics: { lastRunAt, lastResult },
     points: trendOf([runs], nowMs - windowSeconds * 1000),
     trends: { runs: countTrend(runs, windowSeconds, nowMs, nowMs - windowSeconds * 1000) },
-    recent: {},
   };
 }
 
@@ -375,7 +293,6 @@ function totalFor(key, values) {
   return numbers.reduce((a, b) => a + b, 0);
 }
 
-// Time of the first service holding the numeric max of maxKey, else null.
 function atOfMax(services, atKey, maxKey) {
   const max = totalFor(maxKey, services.map((s) => s.metrics[maxKey]));
   if (typeof max !== "number") return null;
@@ -401,20 +318,9 @@ function buildPayload({ results, windowKey, nowMs }) {
   const windowName = normalizeWindow(windowKey);
   const windowSeconds = WINDOWS[windowName];
   const safeResults = results || {};
-  const recentFrom = new Date(recentAnchor(nowMs) - RECENT_SLOTS * RECENT_STEP_MS).toISOString();
   const services = SERVICES.map((service) => {
-    const { metrics, points, trends, recent } = BUILDERS[service.kind](safeResults, service, windowSeconds, nowMs);
-    const out = { id: service.id, kind: service.kind, name: service.name, metrics, trend: { points }, trends };
-    // Slot i of every recent series covers [from + i min, from + (i + 1) min].
-    out.recent = { from: recentFrom, stepSeconds: RECENT_STEP_MS / 1000, series: recent };
-    const job = JOB_SCHEDULES[service.id];
-    if (job) {
-      out.schedule = job.schedule;
-      out.cron = job.cron;
-      out.timeZone = job.timeZone;
-      out.nextRun = new Date(nextRunAt(job.cron, nowMs)).toISOString();
-    }
-    return out;
+    const { metrics, points, trends } = BUILDERS[service.kind](safeResults, service, windowSeconds, nowMs);
+    return { id: service.id, kind: service.kind, name: service.name, metrics, trend: { points }, trends };
   });
   return {
     generatedAt: new Date(nowMs).toISOString(),
@@ -425,14 +331,4 @@ function buildPayload({ results, windowKey, nowMs }) {
   };
 }
 
-module.exports = {
-  METRIC_KEYS,
-  TREND_KEYS,
-  RECENT_KEYS,
-  RECENT_SLOTS,
-  SCHEDULE_KEYS,
-  buildPayload,
-  buildTotals,
-  totalFor,
-  trendOf,
-};
+module.exports = { buildPayload };

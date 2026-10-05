@@ -354,7 +354,8 @@ test("idle trend is a flat line, failed trend is empty", () => {
 test("trends follow trend in the service object and use the kind's trend keys", () => {
   const payload = buildPayload({ results: allEmpty(), windowKey: "1h", nowMs: NOW });
   for (const s of payload.services) {
-    assert.deepEqual(Object.keys(s), ["id", "kind", "name", "metrics", "trend", "trends"], s.id);
+    const added = s.kind === "scheduler" ? ["recent", "schedule", "cron", "timeZone", "nextRun"] : ["recent"];
+    assert.deepEqual(Object.keys(s), ["id", "kind", "name", "metrics", "trend", "trends", ...added], s.id);
     assert.deepEqual(Object.keys(s.trends), [...TREND_KEYS[s.kind]], s.id);
   }
   assert.deepEqual(TREND_KEYS.firestore, ["readsPerMin", "writesPerMin", "deletesPerMin"]);

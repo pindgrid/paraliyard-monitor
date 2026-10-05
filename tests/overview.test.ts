@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import sample from "../src/mock/sample-metrics.json";
-import { startApp, type AppHandle } from "../src/app";
+// The iteration-4 composition of the overview charts and tables (src/app.ts
+// now renders the iteration-5 page, which does not use these modules).
+import { startApp, type AppHandle } from "./fixtures/app-iteration4";
 import type { ChartOptions, ChartSpec } from "../src/charts";
 import { createOverview } from "../src/overview";
 import { CELL_METRIC, PRIMARY_METRIC, isAllowedPair, parseRoute } from "../src/routes";

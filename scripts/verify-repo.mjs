@@ -122,7 +122,10 @@ if (existsSync(distIndex)) {
 }
 
 // 5b. Root runtime dependencies (bundled into the site) must be MIT or Apache-2.0.
+// Font packages from the Fontsource scopes may also be OFL-1.1 (nothing else may).
 const ALLOWED_LICENSES = new Set(["MIT", "Apache-2.0"]);
+const OFL_LICENSE = "OFL-1.1";
+const OFL_SCOPES = ["@fontsource/", "@fontsource-variable/"];
 const rootPkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
 for (const name of Object.keys(rootPkg.dependencies || {})) {
   const depPkgPath = join(ROOT, "node_modules", ...name.split("/"), "package.json");
@@ -131,7 +134,30 @@ for (const name of Object.keys(rootPkg.dependencies || {})) {
     continue;
   }
   const license = JSON.parse(readFileSync(depPkgPath, "utf8")).license;
-  if (!ALLOWED_LICENSES.has(license)) fail(`dependency ${name} has license ${JSON.stringify(license)}, expected MIT or Apache-2.0`);
+  const oflFont = license === OFL_LICENSE && OFL_SCOPES.some((scope) => name.startsWith(scope));
+  if (!ALLOWED_LICENSES.has(license) && !oflFont) {
+    fail(
+      `dependency ${name} has license ${JSON.stringify(license)}, expected MIT or Apache-2.0 ` +
+        `(OFL-1.1 only for ${OFL_SCOPES.join(" or ")} packages)`,
+    );
+  }
+}
+
+// 5c. Built HTML and CSS: no font CDNs, script CDNs or remote url()/@import.
+const EXTERNAL_HOSTS = ["fonts.googleapis.com", "fonts.gstatic.com", "cdn.jsdelivr.net", "unpkg.com", "cdnjs.cloudflare.com"];
+const ALLOWED_URLS = ["http://www.w3.org/2000/svg"];
+const builtPages = [
+  ...walk(join(ROOT, "dist")).filter((f) => /\.html$/i.test(f) && relative(join(ROOT, "dist"), f) === basename(f)),
+  ...walk(join(ROOT, "dist", "assets")).filter((f) => /\.css$/i.test(f)),
+];
+for (const file of builtPages) {
+  let text = readFileSync(file, "utf8");
+  for (const allowed of ALLOWED_URLS) text = text.split(allowed).join("");
+  for (const host of EXTERNAL_HOSTS) {
+    if (text.includes(host)) fail(`${rel(file)} references ${host}`);
+  }
+  if (/url\(\s*["']?\s*https?:/i.test(text)) fail(`${rel(file)} has a url() pointing at another host`);
+  if (/@import\s+(url\(\s*)?["']?\s*https?:/i.test(text)) fail(`${rel(file)} has an @import from another host`);
 }
 
 // 6. functions/package.json rules.
