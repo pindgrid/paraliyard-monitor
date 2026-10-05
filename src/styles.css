@@ -57,12 +57,13 @@ button, select { font: inherit; color: inherit; }
 .note code { font-size: 12px; }
 
 /* Hero */
-/* The left column is as wide as the big number, so it never runs into the chart. */
-.hero { display: grid; grid-template-columns: minmax(230px, max-content) 1fr; gap: 28px; padding: 28px 0 24px; border-bottom: 1px solid var(--rule); }
+/* The left column is capped at 300px as in the design; the hint wraps and the big number scales with the column. */
+.hero { display: grid; grid-template-columns: minmax(230px, 300px) 1fr; gap: 28px; padding: 28px 0 24px; border-bottom: 1px solid var(--rule); }
+.hero > :first-child { container-type: inline-size; }
 .hero h2 { margin: 0; font-size: 15px; font-weight: 600; }
 .hero .src { margin: 2px 0 14px; font-size: 13px; color: var(--ink-3); }
-/* Sized so an 8-character value ("1,234.56") fits beside the chart. */
-.bignum { display: block; font-size: clamp(44px, 6vw, 80px); white-space: nowrap; font-weight: 300; font-stretch: 125%; line-height: .92; letter-spacing: -.035em; color: var(--straw); }
+/* Sized to the column: 8 characters ("1,234.56") × ~0.62em × 60px ≤ 300px, and 20cqi at 230px is 46px. */
+.bignum { display: block; font-size: clamp(40px, 20cqi, 60px); white-space: nowrap; max-width: 100%; font-weight: 300; font-stretch: 125%; line-height: .92; letter-spacing: -.035em; color: var(--straw); }
 .unit { display: block; margin-top: 6px; font-size: 14px; color: var(--ink-2); }
 .sub { display: grid; grid-template-columns: repeat(3, auto); gap: 2px 22px; margin: 22px 0 0; justify-content: start; }
 .sub dt { font-size: 12px; color: var(--ink-3); } .sub dd { margin: 0; font-size: 18px; font-weight: 600; font-stretch: 105%; }

@@ -44,12 +44,32 @@ describe("styles.css", () => {
     expect(css).toMatch(/@media \(prefers-reduced-motion: reduce\)/);
   });
 
-  it("sizes the hero's left column to the big number, with a clamp()ed font and a single column at 780px", () => {
+  it("caps the hero's left column at 300px, makes it a size container, fits the big number and keeps a single column at 780px", () => {
     const hero = css.match(/(?:^|\n)\.hero\s*\{([^}]*)\}/)?.[1] ?? "";
     const columns = hero.match(/grid-template-columns:\s*([^;]+);/)?.[1] ?? "";
-    expect(columns).toMatch(/^minmax\(\d+px,\s*max-content\)\s+1fr$/);
+    expect(columns).toMatch(/^minmax\(230px,\s*300px\)\s+1fr$/);
+    expect(hero).not.toContain("max-content");
+
+    const left = css.match(/\.hero\s*>\s*:first-child\s*\{([^}]*)\}/)?.[1] ?? "";
+    expect(left).toMatch(/container-type:\s*inline-size|container:[^;]*\/\s*inline-size/);
+
     const bignum = css.match(/\.bignum\s*\{([^}]*)\}/)?.[1] ?? "";
-    expect(bignum).toMatch(/font-size:\s*clamp\(/);
+    const clamp = bignum.match(/font-size:\s*clamp\((\d+)px,\s*(\d+(?:\.\d+)?)cqi,\s*(\d+)px\)/);
+    expect(clamp).not.toBeNull();
+    const [min, n, max] = [Number(clamp![1]), Number(clamp![2]), Number(clamp![3])];
+    expect(n).toBeLessThanOrEqual(20);
+    expect(max).toBeLessThanOrEqual(64);
+    expect(bignum).toMatch(/white-space:\s*nowrap/);
+    expect(bignum).toMatch(/max-width:\s*100%/);
+    for (const value of ["1,234.56", "130.00", "160.00"]) {
+      expect(value.length * 0.62 * max, value).toBeLessThanOrEqual(300);
+      expect(value.length * 0.62 * Math.max(min, (n * 230) / 100), value).toBeLessThanOrEqual(230);
+    }
+
+    const hint = css.match(/\.hint\s*\{([^}]*)\}/)?.[1] ?? "";
+    expect(hint).not.toMatch(/nowrap/);
+    expect(hint).not.toMatch(/width:/);
+
     expect(css).toMatch(/@media \(max-width: 780px\) \{ \.hero \{ grid-template-columns: 1fr;/);
   });
 
