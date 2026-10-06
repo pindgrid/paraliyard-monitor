@@ -1,9 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderDashboard } from "../src/dashboard";
 import { bindOpeners, createDrawer, type Drawer } from "../src/drawer";
-import type { DrawerChartSpec } from "../src/drawer-chart";
+import type { DrawerChartSpec, XYPoint } from "../src/drawer-chart";
+import { liveValue } from "../src/drawer-groups";
+import { fmt, istDay } from "../src/fmt";
 import { createMockHistorySource, type HistorySource } from "../src/history-source";
+import { panelData } from "../src/panel-config";
 import { createMockSource } from "../src/source";
+import { computeStats } from "../src/stats";
 import type { HistoryRange, HistoryResponse, MetricsResponse } from "../src/types";
 
 const NOW = Date.UTC(2026, 9, 5, 8, 30, 0);
@@ -204,15 +208,18 @@ describe("legend and stats", () => {
     // No HTML legend: the chart draws it.
     expect(aside().querySelector(".dlegend")).toBeNull();
     expect(aside().querySelector("[data-series]")).toBeNull();
-    // Instances, CPU and RAM start hidden.
-    expect(rowState()).toEqual([false, false, true, true, true]);
-    expect(charts[0].spec.datasets.map((d) => Boolean(d.hidden))).toEqual([false, false, true, true, true]);
+    // Every series starts visible: each has its own panel.
+    expect(rowState()).toEqual([false, false, false, false, false]);
+    expect(charts[0].spec.datasets.map((d) => Boolean(d.hidden))).toEqual([false, false, false, false, false]);
+    expect(charts[0].spec.panels?.map((p) => p.title)).toEqual(["Requests per minute", "Instances", "CPU and RAM (p99, %)"]);
     const toggle = charts[0].spec.onLegendToggle!;
     toggle(1, false);
-    expect(rowState()).toEqual([false, true, true, true, true]);
+    expect(rowState()).toEqual([false, true, false, false, false]);
     expect(aside().querySelector('.dstats tbody tr[data-row="1"]')?.getAttribute("data-hidden")).toBe("true");
-    toggle(3, true);
-    expect(rowState()).toEqual([false, true, true, false, true]);
+    toggle(3, false);
+    expect(rowState()).toEqual([false, true, false, true, false]);
+    toggle(1, true);
+    expect(rowState()).toEqual([false, false, false, true, false]);
     // A legend toggle never loads anything.
     expect(loads).toHaveLength(5);
     // Values come from the loaded points.
@@ -223,7 +230,77 @@ describe("legend and stats", () => {
   it("an older deep link's metric starts visible", async () => {
     drawer.open("fn:function2:pyMintOnCrewClaim", { metric: "cpuPct" });
     await drawer.settled();
-    expect(charts[0].spec.datasets.map((d) => Boolean(d.hidden))).toEqual([false, false, true, false, true]);
+    expect(charts[0].spec.datasets[3].hidden).toBe(false);
+    // All errors starts with requests hidden, unless the link names them.
+    drawer.open("sum:errors");
+    await drawer.settled();
+    expect(charts[1].spec.datasets.map((d) => Boolean(d.hidden))).toEqual([true, false, false]);
+    drawer.open("sum:errors", { metric: "reqPerMin" });
+    await drawer.settled();
+    expect(charts[2].spec.datasets[0].hidden).toBe(false);
+  });
+
+  it("stats are computed from the raw points, not the buckets", async () => {
+    drawer.open("fs");
+    await drawer.settled();
+    const mock = createMockHistorySource(() => NOW);
+    const metrics = ["readsPerMin", "writesPerMin", "deletesPerMin"];
+    const rows = [...aside().querySelectorAll(".dstats tbody tr")];
+    for (const [i, metric] of metrics.entries()) {
+      const raw = (await mock.load("firestore:yard", metric, "24h")).points.map((p) => p.v);
+      const stats = computeStats(raw)!;
+      const cells = [...rows[i].querySelectorAll("td")].map((td) => td.textContent);
+      expect(cells.slice(1), metric).toEqual([stats.latest, stats.min, stats.avg, stats.max, stats.p99].map((v) => fmt.rate(v)));
+    }
+    // The chart gets the same raw points and buckets them itself.
+    const spec = charts[0].spec;
+    expect(spec.datasets[0].data).toHaveLength(288);
+    expect(spec.panelContext).toMatchObject({ bucketMs: 15 * 60000, sourceStepMs: 5 * 60000, band: null });
+  });
+});
+
+describe("bucket note", () => {
+  it("explains the range's buckets and source resolution under the chart", async () => {
+    drawer.open("fs");
+    await drawer.settled();
+    const note = () => aside().querySelector('[data-d="note"]')?.textContent;
+    expect(aside().querySelector(".dchart + .dnote")).not.toBeNull();
+    expect(note()).toBe("Solid bar: average per 15 min. Light bar: busiest 5 min.");
+    aside().querySelector<HTMLElement>('[data-range="7d"]')!.click();
+    await drawer.settled();
+    expect(note()).toBe("Solid bar: average per 2 h. Light bar: busiest hour.");
+    drawer.open("st:bucket:mineral-proton-438104-g8-paraliyard", { range: "30d" });
+    await drawer.settled();
+    expect(note()).toBe("Solid bar: average per 6 h. Light bar: busiest 3 h. Lines show the last value in each 6 h.");
+    expect(aside().querySelector('[data-d="foot"]')?.textContent).toContain("Click a legend item to hide or show a series.");
+  });
+
+  it("a group whose first point is after the range start gets a 'No data before' band", async () => {
+    const first = NOW - 2 * 3600000;
+    const source: HistorySource = {
+      async load(service, metric, range) {
+        const points = Array.from({ length: 24 }, (_, i) => ({ t: new Date(first + i * 300000).toISOString(), v: 1 }));
+        return { service, metric, range, unit: "per minute", generatedAt: new Date(NOW).toISOString(), points };
+      },
+    };
+    const specs: DrawerChartSpec[] = [];
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const own = createDrawer({
+      doc: document,
+      host,
+      source,
+      now: () => NOW,
+      onClose: () => own.close(),
+      createChart: (_canvas, spec) => {
+        specs.push(spec);
+        return { setVisible() {}, setData() {}, destroy() {} };
+      },
+    });
+    own.open("fs");
+    await own.settled();
+    expect(specs[0].panelContext!.band).toEqual({ from: NOW - 86400000, to: first, label: `No data before ${istDay(first)}` });
+    own.destroy();
   });
 });
 
@@ -276,8 +353,10 @@ describe("CSV", () => {
     expect(blobs[0].type).toBe("text/csv");
     const lines = (await readBlob(blobs[0])).split("\n");
     expect(lines[0]).toBe('time,"Reads/min","Writes/min","Deletes/min"');
-    // 24h at 5-minute alignment.
+    // 24h at 5-minute alignment: the raw points, not the 15-minute buckets.
     expect(lines.length - 1).toBe(288);
+    const raw = await createMockHistorySource(() => NOW).load("firestore:yard", "readsPerMin", "24h");
+    expect(lines.length - 1).toBe(raw.points.length);
     expect(lines[1]).toMatch(/^\d{4}-\d\d-\d\dT\d\d:\d\d:00\.000Z,[\d.]+,[\d.]+,[\d.]+$/);
 
     drawer.open("job:scheduler:pyNightlyExport");
@@ -591,5 +670,50 @@ describe("live append", () => {
     await drawer.settled();
     drawer.appendLive(await createMockSource(() => NOW + 120000).load());
     expect(charts[1].setData).toEqual([]);
+  });
+
+  it("a live point updates the current (last) bucket without adding buckets", async () => {
+    // 2:02 pm: the next refresh (2:03 pm) falls in the same 5-minute bucket.
+    const base = NOW + 120000;
+    const updates: { index: number; data: XYPoint[]; from?: number; to?: number }[] = [];
+    const specs: DrawerChartSpec[] = [];
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const own = createDrawer({
+      doc: document,
+      host,
+      source: createMockHistorySource(() => base),
+      now: () => base,
+      onClose: () => own.close(),
+      createChart: (_canvas, spec) => {
+        specs.push(spec);
+        return { setVisible() {}, setData: (index, data, from, to) => updates.push({ index, data: [...data], from, to }), destroy() {} };
+      },
+    });
+    for (const range of ["1h", "6h"] as const) {
+      updates.length = 0;
+      own.open("fs", { range });
+      await own.settled();
+      const spec = specs[specs.length - 1];
+      const panel = spec.panels![0];
+      const win = { from: spec.from!, to: spec.to!, bucketMs: spec.panelContext!.bucketMs, sourceStepMs: spec.panelContext!.sourceStepMs };
+      const before = panelData(panel, spec.datasets.map((d) => d.data), win)[0].buckets;
+      const later = await createMockSource(() => base + 60000).load();
+      own.appendLive(later);
+      expect(updates.map((u) => u.index), range).toEqual([0, 1, 2]);
+      const raw = spec.datasets.map((d, i) => updates.find((u) => u.index === i)?.data ?? d.data);
+      const u = updates[0];
+      expect([u.from, u.to], range).toEqual([base + 60000 - (range === "1h" ? 1 : 6) * 3600000, base + 60000]);
+      const after = panelData(panel, raw, { ...win, from: u.from!, to: u.to! })[0].buckets;
+      expect(after, range).toHaveLength(before.length);
+      const live = liveValue(later, "firestore:yard", "readsPerMin")!;
+      expect(raw[0][raw[0].length - 1], range).toEqual({ x: base + 60000, y: live });
+      // The live point is part of the last bucket.
+      const last = after[after.length - 1];
+      expect(last.start, range).toBeLessThan(base + 60000);
+      expect(last.end, range).toBeGreaterThanOrEqual(base + 60000);
+      expect(last.peak, range).toBeGreaterThanOrEqual(live);
+    }
+    own.destroy();
   });
 });

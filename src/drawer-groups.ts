@@ -1,4 +1,4 @@
-import { BYTE_AXIS_MIN, fmt, shortBucket, type Formatter } from "./fmt";
+import { fmt, shortBucket, type Formatter } from "./fmt";
 import { addSeries, latestValue, recentSeries } from "./recent";
 import { PROJECT_ID, RECENT_KEYS, SERVICES } from "./services";
 import type { HistoryRange, MetricsResponse, ServiceInfo } from "./types";
@@ -22,26 +22,41 @@ export const COLORS: Readonly<Record<string, string>> = {
 export const BUCKET_COLORS = ["--straw", "--canal", "--paddy", "--ember"];
 export const SITE_COLORS = ["--straw", "--canal", "--paddy", "--ember"];
 
+// One /api/history call (and one row of the stats table and CSV).
 export interface SeriesSpec {
   service: string;
   metric: string;
   label: string;
   color: string;
-  axis: "y" | "y1";
   format: Formatter;
   hidden?: boolean;
-  fill?: boolean;
-  stepped?: boolean;
 }
 
 export interface AxisSpec {
   title: string;
   format: Formatter;
-  max?: number;
-  // Byte axes span at least BYTE_AXIS_MIN.
-  suggestedMax?: number;
-  // A level (e.g. bytes stored) does not start at zero.
-  level?: boolean;
+}
+
+// One drawn line or bar of a panel, from series[series].
+export interface PanelDataset {
+  series: number;
+  label: string;
+  color: string;
+  // minus: max(0, value - series[minus]) at the same time; memPct: 1st gen
+  // memory bytes as a percentage of GEN1_MEMORY_BYTES.
+  derive?: "minus" | "memPct";
+  minus?: number;
+}
+
+// One chart of a drawer group, stacked top to bottom with a shared x axis.
+export interface PanelSpec {
+  title: string;
+  // bar: average and peak per bucket; level: stepped last value; pct: 0-100 % line.
+  kind: "bar" | "level" | "pct";
+  unit: "count" | "bytes" | "pct";
+  heightWeight: number;
+  stacked?: boolean;
+  datasets: PanelDataset[];
 }
 
 export interface DrawerGroup {
@@ -53,8 +68,12 @@ export interface DrawerGroup {
   sub: string;
   ranges: readonly HistoryRange[];
   defaultRange: HistoryRange;
-  axes: { y: AxisSpec; y1?: AxisSpec };
+  // The runs chart's y axis.
+  axes?: { y: AxisSpec };
   series: SeriesSpec[];
+  // Line groups: what is drawn. Series without a panel are still loaded,
+  // listed in the stats table and in the CSV.
+  panels: PanelSpec[];
 }
 
 const byKind = (kind: ServiceInfo["kind"]) => SERVICES.filter((s) => s.kind === kind);
@@ -64,31 +83,62 @@ function line(group: Omit<DrawerGroup, "type" | "ranges" | "defaultRange">): Dra
   return { ...group, type: "line", ranges: LINE_RANGES, defaultRange: "24h" };
 }
 
+// Successful requests (requests minus errors) and errors, stacked.
+function requestsPanel(requests: number, errors: number): PanelSpec {
+  return {
+    title: "Requests per minute",
+    kind: "bar",
+    unit: "count",
+    heightWeight: 1.2,
+    stacked: true,
+    datasets: [
+      { series: requests, label: "Successful", color: "--straw", derive: "minus", minus: errors },
+      { series: errors, label: "Errors", color: "--ember" },
+    ],
+  };
+}
+
 function functionGroup(service: ServiceInfo, opener: string): DrawerGroup {
   const gen1 = service.kind === "function1";
   const series: SeriesSpec[] = gen1
     ? [
-        { service: service.id, metric: "execPerMin", label: "Executions/min", color: "--straw", axis: "y", fill: true, format: fmt.int },
-        { service: service.id, metric: "memBytes", label: "Memory (p99)", color: "--paddy", axis: "y1", hidden: true, format: fmt.bytes },
+        { service: service.id, metric: "execPerMin", label: "Executions/min", color: "--straw", format: fmt.int },
+        { service: service.id, metric: "memBytes", label: "Memory (p99)", color: "--paddy", format: fmt.bytes },
       ]
     : [
-        { service: service.id, metric: "reqPerMin", label: "Requests/min", color: "--straw", axis: "y", fill: true, format: fmt.int },
-        { service: service.id, metric: "errPerMin", label: "Errors/min", color: "--ember", axis: "y", format: fmt.int },
-        { service: service.id, metric: "instances", label: "Instances", color: "--ink-2", axis: "y", stepped: true, hidden: true, format: fmt.int },
-        { service: service.id, metric: "cpuPct", label: "CPU % (p99)", color: "--canal", axis: "y1", hidden: true, format: fmt.pct },
-        { service: service.id, metric: "memPct", label: "RAM % (p99)", color: "--paddy", axis: "y1", hidden: true, format: fmt.pct },
+        { service: service.id, metric: "reqPerMin", label: "Requests/min", color: "--straw", format: fmt.int },
+        { service: service.id, metric: "errPerMin", label: "Errors/min", color: "--ember", format: fmt.int },
+        { service: service.id, metric: "instances", label: "Instances", color: "--ink-2", format: fmt.int },
+        { service: service.id, metric: "cpuPct", label: "CPU % (p99)", color: "--canal", format: fmt.pct },
+        { service: service.id, metric: "memPct", label: "RAM % (p99)", color: "--paddy", format: fmt.pct },
+      ];
+  // 1st gen has no errors, instances or CPU; its RAM % comes from memory bytes.
+  const panels: PanelSpec[] = gen1
+    ? [
+        { title: "Requests per minute", kind: "bar", unit: "count", heightWeight: 1.2, datasets: [{ series: 0, label: "Executions", color: "--straw" }] },
+        { title: "RAM (p99, %)", kind: "pct", unit: "pct", heightWeight: 0.9, datasets: [{ series: 1, label: "RAM", color: "--paddy", derive: "memPct" }] },
+      ]
+    : [
+        requestsPanel(0, 1),
+        { title: "Instances", kind: "level", unit: "count", heightWeight: 0.7, datasets: [{ series: 2, label: "Instances", color: "--ink-2" }] },
+        {
+          title: "CPU and RAM (p99, %)",
+          kind: "pct",
+          unit: "pct",
+          heightWeight: 0.9,
+          datasets: [
+            { series: 3, label: "CPU", color: "--canal" },
+            { series: 4, label: "RAM", color: "--paddy" },
+          ],
+        },
       ];
   return line({
     opener,
     target: service.id,
     title: service.name,
-    sub: gen1
-      ? "1st gen Cloud Function. Executions per minute; memory is in the legend."
-      : "2nd gen Cloud Function. Instances, CPU and RAM are in the legend.",
-    axes: gen1
-      ? { y: { title: "per minute", format: fmt.int }, y1: { title: "memory", format: fmt.bytes, suggestedMax: BYTE_AXIS_MIN } }
-      : { y: { title: "per minute", format: fmt.int }, y1: { title: "percent", format: fmt.pct, max: 100 } },
+    sub: gen1 ? "1st gen Cloud Function. Executions per minute and RAM." : "2nd gen Cloud Function. Requests, instances, CPU and RAM.",
     series,
+    panels,
   });
 }
 
@@ -100,21 +150,30 @@ function sitesGroup(opener: string, siteId: string | null): DrawerGroup {
     metric: "bytesServed",
     label: s.name,
     color: SITE_COLORS[sites.indexOf(s) % SITE_COLORS.length],
-    axis: "y",
-    fill: chosen.length === 1,
     format: fmt.bytes,
   }));
   if (!siteId) {
-    series.unshift({ service: "total:hosting", metric: "bytesServed", label: "All sites", color: "--ink-2", axis: "y", format: fmt.bytes });
+    series.unshift({ service: "total:hosting", metric: "bytesServed", label: "All sites", color: "--ink-2", format: fmt.bytes });
   }
+  // The "All sites" total is not drawn: stacked with the sites it would count twice.
+  const offset = siteId ? 0 : 1;
   const site = chosen[0];
   return line({
     opener,
     target: siteId ?? "total:hosting",
     title: siteId && site ? `Hosting: ${site.name}` : "Firebase Hosting",
-    sub: "Bytes served per minute (per bucket on ranges over 6 hours)",
-    axes: { y: { title: "bytes", format: fmt.bytes, suggestedMax: BYTE_AXIS_MIN } },
+    sub: "Bytes served per minute, stacked by site",
     series,
+    panels: [
+      {
+        title: "Data served per minute",
+        kind: "bar",
+        unit: "bytes",
+        heightWeight: 1.4,
+        stacked: true,
+        datasets: chosen.map((s, i) => ({ series: i + offset, label: s.name, color: SITE_COLORS[sites.indexOf(s) % SITE_COLORS.length] })),
+      },
+    ],
   });
 }
 
@@ -128,11 +187,24 @@ export function groupFor(opener: string): DrawerGroup | null {
       target: id,
       title: "Firestore: yard",
       sub: "Document reads, writes and deletes per minute",
-      axes: { y: { title: "reads/min", format: fmt.rate }, y1: { title: "writes, deletes", format: fmt.rate } },
       series: [
-        { service: id, metric: "readsPerMin", label: "Reads/min", color: "--straw", axis: "y", fill: true, format: fmt.rate },
-        { service: id, metric: "writesPerMin", label: "Writes/min", color: "--paddy", axis: "y1", format: fmt.rate },
-        { service: id, metric: "deletesPerMin", label: "Deletes/min", color: "--ember", axis: "y1", format: fmt.rate },
+        { service: id, metric: "readsPerMin", label: "Reads/min", color: "--straw", format: fmt.rate },
+        { service: id, metric: "writesPerMin", label: "Writes/min", color: "--paddy", format: fmt.rate },
+        { service: id, metric: "deletesPerMin", label: "Deletes/min", color: "--ember", format: fmt.rate },
+      ],
+      panels: [
+        { title: "Reads per minute", kind: "bar", unit: "count", heightWeight: 1.2, datasets: [{ series: 0, label: "Reads", color: "--straw" }] },
+        {
+          title: "Writes and deletes per minute",
+          kind: "bar",
+          unit: "count",
+          heightWeight: 0.9,
+          stacked: true,
+          datasets: [
+            { series: 1, label: "Writes", color: "--paddy" },
+            { series: 2, label: "Deletes", color: "--ember" },
+          ],
+        },
       ],
     });
   }
@@ -142,12 +214,13 @@ export function groupFor(opener: string): DrawerGroup | null {
       target: "total:function2",
       title: "All functions",
       sub: "Requests and errors per minute, summed across the 2nd gen functions",
-      axes: { y: { title: "per minute", format: fmt.int } },
       series: [
-        { service: "total:function2", metric: "reqPerMin", label: "Requests/min", color: "--straw", axis: "y", fill: true, hidden: opener === "sum:errors", format: fmt.int },
-        { service: "total:function2", metric: "errPerMin", label: "Errors/min", color: "--ember", axis: "y", format: fmt.int },
-        { service: "total:function2", metric: "instances", label: "Instances", color: "--ink-2", axis: "y", stepped: true, hidden: true, format: fmt.int },
+        { service: "total:function2", metric: "reqPerMin", label: "Requests/min", color: "--straw", hidden: opener === "sum:errors", format: fmt.int },
+        { service: "total:function2", metric: "errPerMin", label: "Errors/min", color: "--ember", format: fmt.int },
+        // Loaded for the stats table and CSV; not drawn.
+        { service: "total:function2", metric: "instances", label: "Instances", color: "--ink-2", format: fmt.int },
       ],
+      panels: [requestsPanel(0, 1)],
     });
   }
   if (opener === "sum:bytes") {
@@ -157,17 +230,27 @@ export function groupFor(opener: string): DrawerGroup | null {
       target: "total:bucket",
       title: "Storage, all buckets",
       sub: "Bytes stored over time",
-      axes: { y: { title: "stored", format: fmt.bytes, level: true, suggestedMax: BYTE_AXIS_MIN } },
       series: [
-        { service: "total:bucket", metric: "bytesStored", label: "All buckets", color: "--ink-2", axis: "y", format: fmt.bytes },
+        { service: "total:bucket", metric: "bytesStored", label: "All buckets", color: "--ink-2", format: fmt.bytes },
         ...buckets.map((b, i) => ({
           service: b.id,
           metric: "bytesStored",
           label: shortBucket(b.name, PROJECT_ID),
           color: BUCKET_COLORS[i % BUCKET_COLORS.length],
-          axis: "y" as const,
           format: fmt.bytes,
         })),
+      ],
+      panels: [
+        {
+          title: "Storage used",
+          kind: "level",
+          unit: "bytes",
+          heightWeight: 1.4,
+          datasets: [
+            { series: 0, label: "All buckets", color: "--ink-2" },
+            ...buckets.map((b, i) => ({ series: i + 1, label: shortBucket(b.name, PROJECT_ID), color: BUCKET_COLORS[i % BUCKET_COLORS.length] })),
+          ],
+        },
       ],
     });
   }
@@ -180,16 +263,18 @@ export function groupFor(opener: string): DrawerGroup | null {
   if (!service) return null;
   if (kind === "fn" && (service.kind === "function2" || service.kind === "function1")) return functionGroup(service, opener);
   if (kind === "st" && service.kind === "bucket") {
-    const buckets = byKind("bucket");
     return line({
       opener,
       target: service.id,
       title: shortBucket(service.name, PROJECT_ID),
       sub: `Storage bucket ${service.name}`,
-      axes: { y: { title: "stored", format: fmt.bytes, level: true, suggestedMax: BYTE_AXIS_MIN }, y1: { title: "requests/min", format: fmt.int } },
       series: [
-        { service: service.id, metric: "bytesStored", label: "Bytes stored", color: BUCKET_COLORS[buckets.indexOf(service) % 4], axis: "y", fill: true, format: fmt.bytes },
-        { service: service.id, metric: "reqPerMin", label: "Requests/min", color: "--canal", axis: "y1", format: fmt.int },
+        { service: service.id, metric: "bytesStored", label: "Bytes stored", color: "--canal", format: fmt.bytes },
+        { service: service.id, metric: "reqPerMin", label: "Requests/min", color: "--straw", format: fmt.int },
+      ],
+      panels: [
+        { title: "Storage used", kind: "level", unit: "bytes", heightWeight: 1, datasets: [{ series: 0, label: "Stored", color: "--canal" }] },
+        { title: "Requests per minute", kind: "bar", unit: "count", heightWeight: 1, datasets: [{ series: 1, label: "Requests", color: "--straw" }] },
       ],
     });
   }
@@ -205,9 +290,10 @@ export function groupFor(opener: string): DrawerGroup | null {
       defaultRange: "30d",
       axes: { y: { title: "seconds", format: fmt.seconds } },
       series: [
-        { service: service.id, metric: "runs", label: "Runs", color: "--paddy", axis: "y", format: fmt.int },
-        { service: service.id, metric: "durationSec", label: "Duration (p99)", color: "--canal", axis: "y", format: fmt.seconds },
+        { service: service.id, metric: "runs", label: "Runs", color: "--paddy", format: fmt.int },
+        { service: service.id, metric: "durationSec", label: "Duration (p99)", color: "--canal", format: fmt.seconds },
       ],
+      panels: [],
     };
   }
   return null;

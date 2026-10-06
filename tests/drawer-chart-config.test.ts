@@ -1,8 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ChartEvent, LegendElement, LegendItem, TooltipItem } from "chart.js";
+import type { TooltipItem } from "chart.js";
+import { bucketFor, sourceStepFor } from "../src/chart-shape";
 import { drawerConfig, type DrawerChartSpec } from "../src/drawer-chart";
 import { groupFor } from "../src/drawer-groups";
 import { fmt, istDateTime, istTick } from "../src/fmt";
+import { panelConfig, type PanelContext } from "../src/panel-config";
+import type { HistoryRange } from "../src/types";
 
 // The real adapter's pure config (tests/setup.ts mocks the module elsewhere).
 vi.unmock("../src/drawer-chart");
@@ -11,152 +14,115 @@ const HOUR = 3600000;
 // 5 Oct 2026, 2:35:47 am IST.
 const T = Date.UTC(2026, 9, 4, 21, 5, 47);
 
-function lineSpec(onLegendToggle?: DrawerChartSpec["onLegendToggle"]): DrawerChartSpec {
+type Scale = {
+  min?: number;
+  max?: number;
+  position?: string;
+  ticks: { maxTicksLimit?: number; stepSize?: number; callback: (v: number, i: number, ticks: { value: number }[]) => string | null };
+};
+
+// What the drawer passes for a group, with every series at value(i).
+function panelContext(opener: string, range: HistoryRange, value: (i: number) => number, extra: Partial<PanelContext> = {}): PanelContext {
+  const group = groupFor(opener)!;
+  const rangeMs = { "1h": HOUR, "6h": 6 * HOUR, "24h": 24 * HOUR, "7d": 168 * HOUR, "30d": 720 * HOUR, "6w": 1008 * HOUR }[range];
+  const step = sourceStepFor(range);
+  const from = T - rangeMs;
+  const n = Math.floor(rangeMs / step);
+  const raw = group.series.map(() => Array.from({ length: n }, (_, i) => ({ x: from + (i + 1) * step, y: value(i) })));
   return {
-    kind: "line",
-    from: T - HOUR,
+    from,
     to: T,
-    formatX: istDateTime,
-    formatTick: (ms) => istTick(ms, HOUR),
-    axes: { y: { title: "reads/min", format: fmt.rate }, y1: { title: "writes, deletes", format: fmt.rate } },
-    formats: [fmt.rate, fmt.rate, fmt.rate],
-    datasets: [
-      { label: "Reads/min", color: "#B07A12", axis: "y", data: [{ x: T, y: 51.64 }], fill: true },
-      { label: "Writes/min", color: "#3E7B4F", axis: "y1", data: [] },
-      { label: "Deletes/min", color: "#B8442F", axis: "y1", data: [], hidden: true },
-    ],
-    onLegendToggle,
+    bucketMs: bucketFor(range),
+    sourceStepMs: step,
+    raw,
+    visible: [],
+    band: null,
+    formatTick: (ms) => istTick(ms, rangeMs),
+    ...extra,
   };
 }
 
-// The options object as plain records (Chart.js option types are unions).
-function options(spec: DrawerChartSpec) {
-  const cfg = drawerConfig(spec);
-  return cfg.options as unknown as {
-    scales: Record<string, { ticks: { callback: (v: number) => string } }>;
-    plugins: {
-      legend: { display: boolean; position?: string; labels?: Record<string, unknown>; onClick?: (...args: unknown[]) => void };
-      tooltip: Record<string, unknown> & { callbacks: { title: (items: unknown[]) => string; label: (item: unknown) => string } };
-    };
-  };
+function scalesOf(opener: string, panel: number, ctx: PanelContext) {
+  const cfg = panelConfig(groupFor(opener)!.panels[panel], ctx);
+  return (cfg.options as unknown as { scales: Record<string, Scale> }).scales;
 }
 
-describe("drawerConfig", () => {
-  it("line charts enable the Chart.js legend at the bottom with line point styles", () => {
-    const legend = options(lineSpec()).plugins.legend;
-    expect(legend.display).toBe(true);
-    expect(legend.position).toBe("bottom");
-    expect(legend.labels).toMatchObject({ usePointStyle: true, pointStyle: "line", boxWidth: 22, color: "#55604E" });
-    expect(typeof legend.onClick).toBe("function");
-  });
-
-  it("keeps series hidden by default hidden", () => {
-    expect(drawerConfig(lineSpec()).data.datasets.map((d) => d.hidden)).toEqual([false, false, true]);
-  });
-
-  it("a legend click toggles that dataset and reports the new visibility", () => {
-    const toggles: [number, boolean][] = [];
-    const legend = options(lineSpec((i, v) => toggles.push([i, v]))).plugins.legend;
-    const shown = [true, true, false];
-    const chart = {
-      isDatasetVisible: (i: number) => shown[i],
-      hide: (i: number) => {
-        shown[i] = false;
-      },
-      show: (i: number) => {
-        shown[i] = true;
-      },
-    };
-    const element = { chart } as unknown as LegendElement<"line">;
-    const item = { datasetIndex: 1, text: "Writes/min" } as LegendItem;
-    const event = {} as ChartEvent;
-    legend.onClick!.call(element, event, item, element);
-    expect(shown).toEqual([true, false, false]);
-    expect(item.hidden).toBe(true);
-    legend.onClick!.call(element, event, { datasetIndex: 2, text: "Deletes/min" } as LegendItem, element);
-    expect(shown).toEqual([true, false, true]);
-    legend.onClick!.call(element, event, item, element);
-    expect(toggles).toEqual([
-      [1, false],
-      [2, true],
-      [1, true],
-    ]);
-  });
-
-  it("uses the shared tooltip style with IST date-time titles and per-range ticks", () => {
-    const opts = options(lineSpec());
-    expect(opts.plugins.tooltip).toMatchObject({
-      backgroundColor: "#1F2A1E",
-      titleColor: "#F6F7F1",
-      bodyColor: "#F6F7F1",
-      padding: 10,
-      cornerRadius: 6,
-      boxPadding: 4,
-      usePointStyle: true,
-    });
-    const item = { parsed: { x: T, y: 51.64 }, datasetIndex: 0, dataset: { label: "Reads/min" } } as unknown as TooltipItem<"line">;
-    expect(opts.plugins.tooltip.callbacks.title([item])).toBe("5 Oct 2026, 2:35:47 am");
-    expect(opts.plugins.tooltip.callbacks.label(item)).toBe(" Reads/min: 51.64");
-    // 1h range: short 12-hour ticks.
-    expect(opts.scales.x.ticks.callback(T)).toBe("2:35 am");
+describe("drawer panels", () => {
+  it("label 1h x ticks with short 12-hour times and keep one y axis", () => {
+    const scales = scalesOf("fs", 0, panelContext("fs", "1h", () => 51.64));
+    expect(scales.x.ticks.callback(T, 0, [])).toBe("2:35 am");
+    expect(scales.x.min).toBe(T - HOUR);
+    expect(scales.x.max).toBe(T);
+    expect(Object.keys(scales).sort()).toEqual(["x", "y"]);
   });
 
   it("every drawer byte axis spans at least 1 kB and never repeats a tick label", () => {
-    type Scale = { beginAtZero: boolean; suggestedMax?: number; ticks: { callback: (v: number, i: number, ticks: { value: number }[]) => string | null } };
-    const cases: [string, "y" | "y1"][] = [
-      ["host", "y"],
-      ["site:hosting:paraliyard", "y"],
-      ["sum:bytes", "y"],
-      ["st:bucket:mineral-proton-438104-g8-paraliyard", "y"],
-      ["fn:function1:pyCleanupOnAuthDelete", "y1"],
+    const cases: [string, number][] = [
+      ["host", 0],
+      ["site:hosting:paraliyard", 0],
+      ["sum:bytes", 0],
+      ["st:bucket:mineral-proton-438104-g8-paraliyard", 0],
     ];
-    for (const [opener, axis] of cases) {
-      const group = groupFor(opener)!;
+    for (const [opener, panel] of cases) {
       // All-zero data on every series of the group.
-      const spec: DrawerChartSpec = {
-        kind: "line",
-        from: T - HOUR,
-        to: T,
-        formatX: istDateTime,
-        axes: group.axes,
-        formats: group.series.map((s) => s.format),
-        datasets: group.series.map((s) => ({ label: s.label, color: "#B07A12", axis: s.axis, data: [{ x: T, y: 0 }] })),
-      };
-      const scale = (drawerConfig(spec).options as unknown as { scales: Record<string, Scale> }).scales[axis];
-      expect(scale.suggestedMax, opener).toBeGreaterThanOrEqual(1000);
-      for (const [max, step] of [
-        [1000, 200],
-        [1, 0.2],
-      ]) {
-        const ticks = Array.from({ length: Math.round(max / step) + 1 }, (_, i) => ({ value: Number((i * step).toFixed(6)) }));
-        const labels = ticks.map((t, i) => scale.ticks.callback(t.value, i, ticks)).filter((l): l is string => l !== null);
-        expect(new Set(labels).size, `${opener} 0..${max}`).toBe(labels.length);
-      }
+      const y = scalesOf(opener, panel, panelContext(opener, "24h", () => 0)).y;
+      expect(y.max, opener).toBeGreaterThanOrEqual(1000);
+      expect(y.min, opener).toBe(0);
+      const ticks = Array.from({ length: Math.round(y.max! / y.ticks.stepSize!) + 1 }, (_, i) => ({ value: i * y.ticks.stepSize! }));
+      expect(ticks.length, opener).toBeLessThanOrEqual(5);
+      const labels = ticks.map((t, i) => y.ticks.callback(t.value, i, ticks)).filter((l): l is string => l !== null);
+      expect(new Set(labels).size, opener).toBe(labels.length);
+      expect(labels, opener).toEqual(["0", "250 B", "500 B", "750 B", "1 kB"]);
     }
-    // Bytes stored is a level: it still does not start at zero.
-    for (const opener of ["sum:bytes", "st:bucket:mineral-proton-438104-g8-paraliyard"]) {
-      const group = groupFor(opener)!;
-      const spec: DrawerChartSpec = { kind: "line", from: T - HOUR, to: T, formatX: istDateTime, axes: group.axes, formats: [], datasets: [] };
-      expect((drawerConfig(spec).options as unknown as { scales: Record<string, Scale> }).scales.y.beginAtZero, opener).toBe(false);
-    }
+    // 1st gen memory is drawn as RAM %, on a 0..100 axis.
+    const ram = scalesOf("fn:function1:pyCleanupOnAuthDelete", 1, panelContext("fn:function1:pyCleanupOnAuthDelete", "24h", () => 0)).y;
+    expect([ram.min, ram.max]).toEqual([0, 100]);
+    expect(ram.ticks.callback(40, 0, [{ value: 40 }])).toBe("40 %");
   });
 
-  it("non-byte axes keep their labels and have no minimum scale", () => {
-    const opts = drawerConfig(lineSpec()).options as unknown as { scales: Record<string, { suggestedMax?: number; ticks: { callback: (v: number, i: number, t: { value: number }[]) => string | null } }> };
-    const ticks = [{ value: 0 }, { value: 10 }, { value: 20 }];
-    expect(ticks.map((t, i) => opts.scales.y.ticks.callback(t.value, i, ticks))).toEqual(["0.00", "10.00", "20.00"]);
-    expect(opts.scales.y.suggestedMax).toBeUndefined();
+  it("count axes never show decimals", () => {
+    const y = scalesOf("fs", 0, panelContext("fs", "24h", (i) => (i === 3 ? 392 : 37.39))).y;
+    expect(y.max).toBe(400);
+    expect(y.ticks.stepSize).toBe(100);
+    const ticks = [0, 100, 200, 300, 400].map((value) => ({ value }));
+    const labels = ticks.map((t, i) => y.ticks.callback(t.value, i, ticks));
+    expect(labels).toEqual(["0", "100", "200", "300", "400"]);
+    expect(y.ticks.maxTicksLimit).toBe(5);
   });
+});
 
-  it("run bars have no legend", () => {
-    const spec: DrawerChartSpec = {
-      kind: "bar",
-      formatX: istDateTime,
-      axes: { y: { title: "seconds", format: fmt.seconds } },
-      formats: [fmt.seconds],
-      labels: [istDateTime(T)],
-      datasets: [{ label: "Run duration (s)", color: "#3E7B4F", axis: "y", data: [{ x: T, y: 12 }] }],
+describe("drawerConfig (scheduler runs)", () => {
+  const runs: DrawerChartSpec = {
+    kind: "bar",
+    formatX: istDateTime,
+    axes: { y: { title: "seconds", format: fmt.seconds } },
+    formats: [fmt.seconds],
+    labels: [istDateTime(T)],
+    datasets: [{ label: "Run duration (s)", color: "#3E7B4F", data: [{ x: T, y: 12 }], barColors: ["#3E7B4F"] }],
+  };
+  const options = () =>
+    drawerConfig(runs).options as unknown as {
+      scales: Record<string, Scale>;
+      plugins: { legend: { display: boolean }; tooltip: Record<string, unknown> & { callbacks: { title: (items: unknown[]) => string; label: (item: unknown) => string } } };
     };
-    expect(options(spec).plugins.legend.display).toBe(false);
+
+  it("has no legend, one y axis and no curve", () => {
+    const opts = options();
+    expect(opts.plugins.legend.display).toBe(false);
+    expect(Object.keys(opts.scales).sort()).toEqual(["x", "y"]);
+    expect(opts.scales.y.position).toBeUndefined();
+    expect(opts.scales.y.ticks.maxTicksLimit).toBeLessThanOrEqual(5);
+    expect(drawerConfig(runs).data.datasets.map((d) => (d as { tension?: number }).tension)).toEqual([0]);
+    expect(drawerConfig(runs).data.datasets[0].backgroundColor).toEqual(["#3E7B4F"]);
+  });
+
+  it("uses the shared tooltip style with run times and seconds", () => {
+    const opts = options();
+    expect(opts.plugins.tooltip).toMatchObject({ backgroundColor: "#1F2A1E", titleColor: "#F6F7F1", padding: 10, cornerRadius: 6 });
+    const item = { parsed: { x: 0, y: 12 }, label: istDateTime(T), datasetIndex: 0, dataset: { label: "Run duration (s)" } } as unknown as TooltipItem<"bar">;
+    expect(opts.plugins.tooltip.callbacks.title([item])).toBe("5 Oct 2026, 2:35:47 am");
+    expect(opts.plugins.tooltip.callbacks.label(item)).toBe(" Run duration (s): 12s");
+    const ticks = [0, 10, 20].map((value) => ({ value }));
+    expect(ticks.map((t, i) => opts.scales.y.ticks.callback(t.value, i, ticks))).toEqual(["0s", "10s", "20s"]);
   });
 });

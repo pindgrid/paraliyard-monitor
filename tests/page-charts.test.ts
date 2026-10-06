@@ -70,31 +70,65 @@ describe("createPageCharts", () => {
     expect(FakeChart.defaults.borderColor).toBe("#D0D6C4");
   });
 
+  // The hero markup: a reads canvas and a writes + deletes canvas.
+  function heroCanvases() {
+    const container = document.createElement("div");
+    container.className = "hero-chart";
+    const reads = canvas();
+    const writes = canvas();
+    writes.dataset.panel = "writes";
+    for (const c of [reads, writes]) {
+      const panel = document.createElement("div");
+      panel.className = "hero-panel";
+      panel.append(c);
+      container.append(panel);
+    }
+    document.body.append(container);
+    return { reads, writes, container };
+  }
+
   it("creates each chart once and then updates it with update('none')", () => {
     const charts = createPageCharts();
-    const heroCanvas = canvas();
+    const { reads: heroCanvas, writes: writesCanvas } = heroCanvases();
     const hostCanvas = canvas();
     charts.hero(heroCanvas, fs(first), T1);
     charts.host(hostCanvas, sites(first), T1);
-    expect(FakeChart.created.map((c) => c.config.type)).toEqual(["line", "bar"]);
-    const [hero, host] = FakeChart.created;
+    expect(FakeChart.created.map((c) => c.config.type)).toEqual(["bar", "bar", "bar"]);
+    const [reads, writes, host] = FakeChart.created;
+    expect(reads.canvas).toBe(heroCanvas);
+    expect(writes.canvas).toBe(writesCanvas);
+    // Both hero panels share the crosshair and overlay plugins.
+    expect((reads.config as unknown as { plugins: { id: string }[] }).plugins.map((p) => p.id)).toEqual(["yardCrosshair", "yardOverlay"]);
 
     charts.hero(heroCanvas, fs(second), T2);
     charts.host(hostCanvas, sites(second), T2);
-    expect(FakeChart.created).toHaveLength(2);
-    expect(hero.update).toHaveBeenCalledTimes(1);
-    expect(hero.update).toHaveBeenCalledWith("none");
-    expect(host.update).toHaveBeenCalledWith("none");
+    expect(FakeChart.created).toHaveLength(3);
+    for (const chart of [reads, writes, host]) {
+      expect(chart.update).toHaveBeenCalledTimes(1);
+      expect(chart.update).toHaveBeenCalledWith("none");
+    }
 
-    const reads = fs(second)!.recent!.series.readsPerMin!;
-    expect(hero.data.datasets[0].data).toHaveLength(30);
-    expect(hero.data.datasets[0].data[29]).toEqual({ x: T2, y: reads[29] });
-    expect(hero.options.scales.x.min).toBe(T2 - 30 * 60000);
-    expect(hero.options.scales.x.max).toBe(T2);
+    const readsSeries = fs(second)!.recent!.series.readsPerMin!;
+    expect(reads.data.datasets[0].data).toHaveLength(30);
+    expect(reads.data.datasets[0].data[29]).toEqual({ x: T2 - 30000, y: readsSeries[29] });
+    expect(reads.options.scales.x.min).toBe(T2 - 30 * 60000);
+    expect(reads.options.scales.x.max).toBe(T2);
+    expect(writes.data.datasets.map((d) => d.data.length)).toEqual([30, 30]);
+    expect(writes.options.scales.x.max).toBe(T2);
 
     expect(host.data.labels).toHaveLength(30);
     expect(host.data.labels![29]).toBe("10:37 pm");
     expect(host.data.datasets[0].data).toEqual(sites(second)[0].recent!.series.bytesServed);
+  });
+
+  it("draws only the reads panel when the writes canvas is missing", () => {
+    const charts = createPageCharts();
+    const lone = canvas();
+    charts.hero(lone, fs(first), T1);
+    expect(FakeChart.created).toHaveLength(1);
+    charts.hero(lone, fs(second), T2);
+    expect(FakeChart.created).toHaveLength(1);
+    expect(FakeChart.created[0].update).toHaveBeenCalledWith("none");
   });
 
   it("does nothing without a 2D context", () => {
@@ -104,14 +138,15 @@ describe("createPageCharts", () => {
     expect(FakeChart.created).toHaveLength(0);
   });
 
-  it("destroy() destroys both charts", () => {
+  it("destroy() destroys every chart", () => {
     const charts = createPageCharts();
-    charts.hero(canvas(), fs(first), T1);
+    charts.hero(heroCanvases().reads, fs(first), T1);
     charts.host(canvas(), sites(first), T1);
+    expect(FakeChart.created).toHaveLength(3);
     charts.destroy();
     expect(FakeChart.created.every((c) => c.destroy.mock.calls.length === 1)).toBe(true);
     // A later call starts a new chart.
     charts.hero(canvas(), fs(first), T1);
-    expect(FakeChart.created).toHaveLength(3);
+    expect(FakeChart.created).toHaveLength(4);
   });
 });

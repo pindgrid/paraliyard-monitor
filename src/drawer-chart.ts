@@ -1,5 +1,7 @@
 // Chart.js for the history drawer (bundled, no zoom plugin). The drawer only
 // uses this adapter, so tests replace it (tests/setup.ts mocks this module).
+// Line groups draw one Chart per panel, stacked in .dchart with a shared x
+// range, crosshair and tooltip; scheduler runs are one bar chart.
 import {
   BarController,
   BarElement,
@@ -13,30 +15,27 @@ import {
   PointElement,
   Tooltip,
   type ChartConfiguration,
-  type ChartEvent,
-  type LegendElement,
-  type LegendItem,
+  type Plugin,
   type TooltipItem,
 } from "chart.js";
+import { firstDataAt, noDataBand, type NoDataBand, type XYPoint } from "./chart-shape";
+import { crosshairSync, overlayPlugin } from "./chart-plugins";
+import type { PanelSpec } from "./drawer-groups";
 import { uniqueTicks, type Formatter } from "./fmt";
-import { alpha, applyTheme, INK_2, INK_3, RULE, tooltipStyle } from "./page-chart-config";
+import { alpha, applyTheme, INK_3, RULE, tooltipStyle } from "./page-chart-config";
+import { bucketTooltip, panelAxis, panelConfig, panelData, type PanelContext, type PanelDatasetMeta, type PanelWindow } from "./panel-config";
 
 Chart.register(LineController, BarController, LineElement, BarElement, PointElement, LinearScale, CategoryScale, Tooltip, Legend, Filler);
 applyTheme(Chart.defaults);
 
-export interface XYPoint {
-  x: number;
-  y: number | null;
-}
+export type { XYPoint } from "./chart-shape";
 
 export interface DrawerChartDataset {
   label: string;
   color: string;
-  axis: "y" | "y1";
+  // Line groups: the loaded points of one series; bar charts: one per bar.
   data: XYPoint[];
   hidden?: boolean;
-  fill?: boolean;
-  stepped?: boolean;
   // Bar charts: one colour per bar.
   barColors?: string[];
 }
@@ -44,18 +43,24 @@ export interface DrawerChartDataset {
 export interface DrawerAxis {
   title: string;
   format: Formatter;
-  max?: number;
-  // The axis spans at least up to this value (e.g. 1 kB for bytes).
-  suggestedMax?: number;
-  level?: boolean;
+}
+
+// Bucket sizes and the "No data before" band of a line group.
+export interface DrawerPanelContext {
+  bucketMs: number;
+  sourceStepMs: number;
+  band: NoDataBand | null;
 }
 
 export interface DrawerChartSpec {
+  // line: the group's panels (one chart each); bar: scheduler run bars.
   kind: "line" | "bar";
+  // Line groups: one per series (DrawerGroup.series order), raw points.
   datasets: DrawerChartDataset[];
-  axes: { y: DrawerAxis; y1?: DrawerAxis };
-  // Line charts: the x range (epoch ms) and how to label times (tooltip
-  // titles; axis ticks use formatTick when given).
+  axes?: { y: DrawerAxis };
+  panels?: PanelSpec[];
+  panelContext?: DrawerPanelContext;
+  // Line charts: the x range (epoch ms) and how to label times.
   from?: number;
   to?: number;
   formatX: (ms: number) => string;
@@ -63,7 +68,7 @@ export interface DrawerChartSpec {
   // Bar charts: one label per bar.
   labels?: string[];
   formats: Formatter[];
-  // A legend click hid or showed a line chart's dataset.
+  // A legend click hid or showed a series (index into datasets).
   onLegendToggle?: (index: number, visible: boolean) => void;
 }
 
@@ -75,94 +80,51 @@ export interface DrawerChart {
 
 export type DrawerChartFactory = (canvas: HTMLCanvasElement, spec: DrawerChartSpec) => DrawerChart;
 
-// Legend click: Chart.js's own toggle, then the new visibility is reported
-// so the drawer can mute that row of the stats table.
-function legendClick(spec: DrawerChartSpec) {
-  return function (this: LegendElement<"line">, event: ChartEvent, item: LegendItem, legend: LegendElement<"line">) {
-    Chart.defaults.plugins.legend.onClick.call(legend, event, item, legend);
-    const index = item.datasetIndex;
-    if (typeof index === "number") spec.onLegendToggle?.(index, legend.chart.isDatasetVisible(index));
-  };
-}
-
-// The drawer chart's Chart.js config (pure; tests call it directly).
+// The scheduler runs chart's Chart.js config (pure; tests call it directly):
+// one bar per run, one y axis, no bucketing.
 export function drawerConfig(spec: DrawerChartSpec): ChartConfiguration {
-  const hasY1 = spec.datasets.some((d) => d.axis === "y1") && Boolean(spec.axes.y1);
-  const line = spec.kind === "line";
+  const format = spec.axes?.y.format ?? spec.formats[0];
   return {
-    type: spec.kind,
+    type: "bar",
     data: {
       labels: spec.labels ?? [],
-      datasets: spec.datasets.map((d, i) => ({
+      datasets: spec.datasets.map((d) => ({
         label: d.label,
-        data: line ? d.data : d.data.map((p) => p.y),
-        yAxisID: d.axis,
+        data: d.data.map((p) => p.y),
         hidden: Boolean(d.hidden),
         borderColor: d.color,
-        backgroundColor: d.barColors ?? alpha(d.color, d.fill ? 0.14 : 0),
-        fill: d.fill ? "origin" : false,
-        stepped: Boolean(d.stepped),
-        borderWidth: line ? (i ? 1.4 : 1.9) : 0,
-        pointRadius: 0,
-        pointHoverRadius: 3,
-        tension: d.stepped ? 0 : 0.25,
-        spanGaps: true,
-        borderRadius: line ? 0 : 3,
+        backgroundColor: d.barColors ?? alpha(d.color, 0.8),
+        borderWidth: 0,
+        tension: 0,
+        borderRadius: 3,
         maxBarThickness: 26,
       })),
     },
     options: {
-      parsing: line ? false : undefined,
       responsive: true,
       maintainAspectRatio: false,
       animation: false,
       interaction: { mode: "index", intersect: false },
       scales: {
-        x: line
-          ? { type: "linear", min: spec.from, max: spec.to, grid: { display: false }, ticks: { color: INK_3, maxTicksLimit: 7, maxRotation: 0, callback: (v) => (spec.formatTick ?? spec.formatX)(Number(v)) } }
-          : { type: "category", grid: { display: false }, ticks: { color: INK_3, maxTicksLimit: 10, maxRotation: 0 } },
-        // Tick labels never repeat (e.g. "1.0 kB" twice on a small byte axis).
+        x: { type: "category", grid: { display: false }, ticks: { color: INK_3, maxTicksLimit: 10, maxRotation: 0 } },
+        // Tick labels never repeat.
         y: {
-          beginAtZero: !spec.axes.y.level,
-          max: spec.axes.y.max,
-          suggestedMax: spec.axes.y.suggestedMax,
-          grid: { color: RULE },
-          title: { display: true, text: spec.axes.y.title, color: INK_3 },
-          ticks: { color: INK_3, maxTicksLimit: 6, callback: uniqueTicks(spec.axes.y.format) },
-        },
-        y1: {
-          display: hasY1,
-          position: "right",
           beginAtZero: true,
-          max: spec.axes.y1?.max,
-          suggestedMax: spec.axes.y1?.suggestedMax,
-          grid: { display: false },
-          title: { display: hasY1, text: spec.axes.y1?.title ?? "", color: INK_3 },
-          ticks: { color: INK_3, maxTicksLimit: 6, callback: uniqueTicks(spec.axes.y1?.format ?? spec.axes.y.format) },
+          grid: { color: RULE },
+          title: { display: false },
+          ticks: { color: INK_3, maxTicksLimit: 5, precision: 0, callback: uniqueTicks(format) },
         },
       },
       plugins: {
-        // Line charts: the Chart.js legend hides or shows a line. Run bars have none.
-        legend: line
-          ? {
-              display: true,
-              position: "bottom",
-              labels: { usePointStyle: true, pointStyle: "line", boxWidth: 22, color: INK_2 },
-              onClick: legendClick(spec),
-            }
-          : { display: false },
+        legend: { display: false },
         tooltip: {
           ...tooltipStyle(),
           callbacks: {
-            title: (items: TooltipItem<"line" | "bar">[]) => {
-              const item = items[0];
-              if (!item) return "";
-              return line ? spec.formatX(Number(item.parsed.x)) : String(item.label);
-            },
-            label: (item: TooltipItem<"line" | "bar">) => {
+            title: (items: TooltipItem<"bar">[]) => (items[0] ? String(items[0].label) : ""),
+            label: (item: TooltipItem<"bar">) => {
               const y = item.parsed.y;
-              const format = spec.formats[item.datasetIndex] ?? spec.axes.y.format;
-              return ` ${item.dataset.label ?? ""}: ${typeof y === "number" ? format(y) : "not available"}`;
+              const f = spec.formats[item.datasetIndex] ?? format;
+              return ` ${item.dataset.label ?? ""}: ${typeof y === "number" ? f(y) : "not available"}`;
             },
           },
         },
@@ -171,28 +133,168 @@ export function drawerConfig(spec: DrawerChartSpec): ChartConfiguration {
   } as ChartConfiguration;
 }
 
-export function createDrawerChart(canvas: HTMLCanvasElement, spec: DrawerChartSpec): DrawerChart {
-  // Without a 2D context the chart is skipped; the stats table still works.
-  if (!canvas.getContext("2d")) return { setVisible() {}, setData() {}, destroy() {} };
+const NOOP: DrawerChart = { setVisible() {}, setData() {}, destroy() {} };
+
+// Pixels per unit of PanelSpec.heightWeight.
+const PANEL_HEIGHT_PX = 150;
+
+function createRunsChart(canvas: HTMLCanvasElement, spec: DrawerChartSpec): DrawerChart {
   const chart = new Chart(canvas, drawerConfig(spec));
   return {
     setVisible(index, visible) {
       chart.setDatasetVisibility(index, visible);
       chart.update("none");
     },
-    setData(index, data, from, to) {
+    setData(index, data) {
       const dataset = chart.data.datasets[index];
       if (!dataset) return;
-      dataset.data = (spec.kind === "line" ? data : data.map((p) => p.y)) as typeof dataset.data;
-      const x = chart.options.scales?.x;
-      if (x && from !== undefined && to !== undefined) {
-        x.min = from;
-        x.max = to;
-      }
+      dataset.data = data.map((p) => p.y);
       chart.update("none");
     },
     destroy() {
       chart.destroy();
     },
   };
+}
+
+// One chart per panel: panel 0 on the given canvas, the others on new
+// canvases; each sits in a .dpanel wrapper sized by its heightWeight.
+function createPanelCharts(canvas: HTMLCanvasElement, spec: DrawerChartSpec, panels: PanelSpec[], pc: DrawerPanelContext): DrawerChart {
+  const doc = canvas.ownerDocument;
+  const container = (canvas.closest(".dchart") as HTMLElement | null) ?? canvas.parentElement;
+  if (!container) return NOOP;
+  const anchor = canvas.nextSibling;
+  const raw: XYPoint[][] = spec.datasets.map((d) => d.data);
+  const visible: boolean[] = spec.datasets.map((d) => !d.hidden);
+  const win: PanelWindow = { from: spec.from ?? 0, to: spec.to ?? 0, bucketMs: pc.bucketMs, sourceStepMs: pc.sourceStepMs };
+  let band = pc.band;
+  const formatTick = spec.formatTick ?? spec.formatX;
+
+  const sync = crosshairSync({
+    container,
+    tooltipFor: (index) =>
+      bucketTooltip(
+        panels,
+        panels.map((p) => panelData(p, raw, win)),
+        index,
+        win,
+        visible,
+      ),
+  });
+
+  function context(): PanelContext {
+    return { ...win, raw, visible, band, formatTick, onToggle: (i) => toggle(i, !visible[i]) };
+  }
+
+  const wrappers: HTMLElement[] = [];
+  const created: HTMLCanvasElement[] = [];
+  const charts: Chart[] = [];
+  const height = container.style.height;
+  container.classList.add("dpanels");
+  container.style.height = `${Math.round(PANEL_HEIGHT_PX * panels.reduce((a, p) => a + p.heightWeight, 0))}px`;
+  panels.forEach((panel, i) => {
+    const wrapper = doc.createElement("div");
+    wrapper.className = "dpanel";
+    wrapper.style.flex = `${panel.heightWeight} 1 0`;
+    let target = canvas;
+    if (i > 0) {
+      target = doc.createElement("canvas");
+      created.push(target);
+    }
+    target.setAttribute("role", "img");
+    target.setAttribute("aria-label", panel.title);
+    wrapper.append(target);
+    container.insertBefore(wrapper, anchor);
+    wrappers.push(wrapper);
+    const config = panelConfig(panel, context());
+    config.plugins = [sync.plugin as unknown as Plugin, overlayPlugin as unknown as Plugin];
+    charts.push(new Chart(target, config));
+  });
+
+  // Re-bucket every panel from raw, then redraw without animation.
+  function refresh() {
+    const ctx = context();
+    charts.forEach((chart, p) => {
+      const next = panelConfig(panels[p], ctx);
+      chart.data.datasets.forEach((dataset, k) => {
+        const fresh = next.data.datasets[k];
+        if (!fresh) return;
+        dataset.data = fresh.data;
+        dataset.hidden = fresh.hidden;
+      });
+      const scales = chart.options.scales as Record<string, Record<string, unknown>> | undefined;
+      const nextScales = next.options?.scales as Record<string, Record<string, unknown>> | undefined;
+      if (scales?.x && nextScales?.x) Object.assign(scales.x, { min: nextScales.x.min, max: nextScales.x.max });
+      if (scales?.y && nextScales?.y) {
+        scales.y.max = nextScales.y.max;
+        Object.assign(scales.y.ticks as object, { stepSize: (nextScales.y.ticks as { stepSize: number }).stepSize });
+      }
+      const plugins = chart.options.plugins as Record<string, unknown> | undefined;
+      const nextPlugins = next.options?.plugins as Record<string, unknown> | undefined;
+      if (plugins && nextPlugins) {
+        plugins.yardOverlay = nextPlugins.yardOverlay;
+        plugins.yardCrosshair = nextPlugins.yardCrosshair;
+      }
+      chart.update("none");
+    });
+  }
+
+  function toggle(index: number, shown: boolean) {
+    if (index < 0 || index >= visible.length) return;
+    visible[index] = shown;
+    for (const chart of charts) {
+      for (const dataset of chart.data.datasets) {
+        if ((dataset as unknown as PanelDatasetMeta).seriesIndex === index) dataset.hidden = !shown;
+      }
+    }
+    // Axes follow the visible series.
+    charts.forEach((chart, p) => {
+      const y = (chart.options.scales as Record<string, Record<string, unknown>> | undefined)?.y;
+      if (!y) return;
+      const axis = panelAxis(panels[p], panelData(panels[p], raw, win), visible, win);
+      y.max = axis.max;
+      Object.assign(y.ticks as object, { stepSize: axis.step });
+      chart.update("none");
+    });
+    spec.onLegendToggle?.(index, shown);
+  }
+
+  return {
+    setVisible(index, shown) {
+      if (index < 0 || index >= visible.length) return;
+      visible[index] = shown;
+      refresh();
+    },
+    setData(index, data, from, to) {
+      if (index < 0 || index >= raw.length) return;
+      raw[index] = data;
+      if (from !== undefined && to !== undefined) {
+        win.from = from;
+        win.to = to;
+      }
+      band = noDataBand(win.from, firstDataAt(raw), win.bucketMs);
+      refresh();
+    },
+    destroy() {
+      for (const chart of charts) chart.destroy();
+      sync.destroy();
+      // The given canvas goes back where it was; the rest is removed.
+      container.insertBefore(canvas, wrappers[0] ?? anchor);
+      canvas.removeAttribute("role");
+      canvas.removeAttribute("aria-label");
+      for (const wrapper of wrappers) wrapper.remove();
+      for (const el of created) el.remove();
+      container.classList.remove("dpanels");
+      container.style.height = height;
+    },
+  };
+}
+
+export function createDrawerChart(canvas: HTMLCanvasElement, spec: DrawerChartSpec): DrawerChart {
+  // Without a 2D context the chart is skipped; the stats table still works.
+  if (!canvas.getContext("2d")) return NOOP;
+  if (spec.kind === "line" && spec.panels && spec.panels.length > 0 && spec.panelContext) {
+    return createPanelCharts(canvas, spec, spec.panels, spec.panelContext);
+  }
+  return createRunsChart(canvas, spec);
 }

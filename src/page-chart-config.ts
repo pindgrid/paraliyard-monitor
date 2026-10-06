@@ -3,7 +3,10 @@
 // call the builders and named callbacks directly. Values follow the design
 // reference (themeDefaults, tooltipStyle, makeHero, makeHost, updateHost).
 import type { ChartConfiguration, TooltipItem } from "chart.js";
+import { bytesTick as axisBytesTick, LIVE_BUCKET_MS, LIVE_BUCKETS, niceAxis, type NiceAxis } from "./chart-shape";
+import type { PanelSpec } from "./drawer-groups";
 import { BYTE_AXIS_MIN, fmt, istTick, istShortTime, istTime, uniqueTicks } from "./fmt";
+import { panelConfig, panelData, type PanelSeries, type PanelWindow } from "./panel-config";
 import { recentSeries } from "./recent";
 import type { ServiceMetrics } from "./types";
 
@@ -87,8 +90,8 @@ export function bytesTick(value: number | string): string {
   return fmt.bytes(Number(value));
 }
 
-// Hosting y ticks without repeated labels.
-export const hostBytesTick = uniqueTicks(fmt.bytes);
+// Hosting y ticks without repeated labels: "0", "500 B", "1 kB".
+export const hostBytesTick = uniqueTicks((v) => axisBytesTick(v ?? 0));
 
 // " paraliyard: 2.0 kB/min".
 export function hostLabel(item: TooltipItem<"bar">): string {
@@ -98,11 +101,31 @@ export function hostLabel(item: TooltipItem<"bar">): string {
 
 // ---------- Hero (Firestore, last 30 minutes) ----------
 
-const HERO_SERIES = [
-  { key: "readsPerMin", label: "Reads/min", color: STRAW, axis: "y", fill: true },
-  { key: "writesPerMin", label: "Writes/min", color: PADDY, axis: "y1", fill: false },
-  { key: "deletesPerMin", label: "Deletes/min", color: EMBER, axis: "y1", fill: false },
-] as const;
+// Reads on top (about 70 % of the height), writes and deletes below.
+export const HERO_PANELS: readonly PanelSpec[] = [
+  { title: "Reads per minute", kind: "bar", unit: "count", heightWeight: 0.7, datasets: [{ series: 0, label: "Reads", color: "--straw" }] },
+  {
+    title: "Writes and deletes per minute",
+    kind: "bar",
+    unit: "count",
+    heightWeight: 0.3,
+    stacked: true,
+    datasets: [
+      { series: 1, label: "Writes", color: "--paddy" },
+      { series: 2, label: "Deletes", color: "--ember" },
+    ],
+  },
+];
+
+const HERO_KEYS = ["readsPerMin", "writesPerMin", "deletesPerMin"] as const;
+
+// The 30 one-minute buckets: recent's window, else the 30 minutes up to the
+// minute of generatedAt.
+export function heroWindow(fs: ServiceMetrics | undefined, generatedAtMs: number): PanelWindow {
+  const recentFrom = fs?.recent ? Date.parse(fs.recent.from) : NaN;
+  const from = Number.isFinite(recentFrom) ? recentFrom : Math.floor(generatedAtMs / MINUTE_MS) * MINUTE_MS - LIVE_WINDOW_MS;
+  return { from, to: from + LIVE_BUCKETS * LIVE_BUCKET_MS, bucketMs: LIVE_BUCKET_MS, sourceStepMs: MINUTE_MS };
+}
 
 // Each minute is plotted at the end of its slot, so the newest is "now".
 function heroPoints(fs: ServiceMetrics | undefined, key: string, generatedAtMs: number): HeroPoint[] {
@@ -117,57 +140,32 @@ function heroPoints(fs: ServiceMetrics | undefined, key: string, generatedAtMs: 
   }));
 }
 
-// Reads, writes and deletes points, in dataset order.
-export function heroData(fs: ServiceMetrics | undefined, generatedAtMs: number): HeroPoint[][] {
-  return HERO_SERIES.map((s) => heroPoints(fs, s.key, generatedAtMs));
+// Reads, writes and deletes points, in series order.
+export function heroPointsOf(fs: ServiceMetrics | undefined, generatedAtMs: number): HeroPoint[][] {
+  return HERO_KEYS.map((key) => heroPoints(fs, key, generatedAtMs));
 }
 
-export function heroConfig(fs: ServiceMetrics | undefined, generatedAtMs: number): ChartConfiguration<"line", HeroPoint[]> {
-  const data = heroData(fs, generatedAtMs);
+// The bucketed series of each hero panel.
+export function heroData(fs: ServiceMetrics | undefined, generatedAtMs: number): PanelSeries[][] {
+  const raw = heroPointsOf(fs, generatedAtMs);
+  const win = heroWindow(fs, generatedAtMs);
+  return HERO_PANELS.map((panel) => panelData(panel, raw, win));
+}
+
+export interface HeroPanelConfig {
+  weight: number;
+  config: ChartConfiguration;
+}
+
+// Two stacked bar panels with one y axis each.
+export function heroConfig(fs: ServiceMetrics | undefined, generatedAtMs: number): { panels: HeroPanelConfig[] } {
+  const raw = heroPointsOf(fs, generatedAtMs);
+  const win = heroWindow(fs, generatedAtMs);
   return {
-    type: "line",
-    data: {
-      datasets: HERO_SERIES.map((s, i) => ({
-        label: s.label,
-        data: data[i],
-        yAxisID: s.axis,
-        fill: s.fill ? "origin" : false,
-        borderWidth: i ? 1.4 : 2,
-        pointRadius: 0,
-        tension: 0.3,
-        spanGaps: true,
-        borderColor: s.color,
-        backgroundColor: alpha(s.color, s.fill ? 0.14 : 0),
-      })),
-    },
-    options: {
-      parsing: false,
-      responsive: true,
-      maintainAspectRatio: false,
-      animation: false,
-      interaction: { mode: "index", intersect: false },
-      scales: {
-        x: {
-          type: "linear",
-          min: generatedAtMs - LIVE_WINDOW_MS,
-          max: generatedAtMs,
-          grid: { display: false },
-          ticks: { stepSize: 5 * MINUTE_MS, maxRotation: 0, callback: heroTick },
-        },
-        y: { beginAtZero: true, grid: { color: RULE }, title: { display: true, text: "reads/min" } },
-        y1: {
-          beginAtZero: true,
-          position: "right",
-          grid: { display: false },
-          suggestedMax: 4,
-          title: { display: true, text: "writes, deletes" },
-        },
-      },
-      plugins: {
-        legend: { position: "bottom", labels: { usePointStyle: true, pointStyle: "line", boxWidth: 22, color: INK_2 } },
-        tooltip: { ...tooltipStyle(), callbacks: { title: heroTooltipTitle, label: rateLabel } },
-      },
-    },
+    panels: HERO_PANELS.map((panel) => ({
+      weight: panel.heightWeight,
+      config: panelConfig(panel, { ...win, raw, visible: [], band: null, formatTick: heroTick }),
+    })),
   };
 }
 
@@ -194,8 +192,16 @@ export function hostData(sites: readonly ServiceMetrics[], generatedAtMs: number
   return { labels, datasets };
 }
 
+// The y axis of the stacked hosting bars: round byte steps, at least 0..1 kB.
+export function hostAxis(data: HostData): NiceAxis {
+  let top = 0;
+  for (let i = 0; i < HOST_SLOTS; i += 1) top = Math.max(top, data.datasets.reduce((a, d) => a + (d[i] ?? 0), 0));
+  return niceAxis(top, "bytes");
+}
+
 export function hostConfig(sites: readonly ServiceMetrics[], generatedAtMs: number): ChartConfiguration<"bar", (number | null)[], string> {
   const data = hostData(sites, generatedAtMs);
+  const axis = hostAxis(data);
   return {
     type: "bar",
     data: {
@@ -206,6 +212,7 @@ export function hostConfig(sites: readonly ServiceMetrics[], generatedAtMs: numb
         backgroundColor: SITE_COLORS[i % SITE_COLORS.length],
         borderRadius: 2,
         stack: "s",
+        tension: 0,
       })),
     },
     options: {
@@ -217,13 +224,21 @@ export function hostConfig(sites: readonly ServiceMetrics[], generatedAtMs: numb
         y: {
           stacked: true,
           beginAtZero: true,
+          min: 0,
+          max: axis.max,
           suggestedMax: BYTE_AXIS_MIN,
           grid: { color: RULE },
-          ticks: { callback: hostBytesTick, maxTicksLimit: 4 },
+          border: { display: false },
+          ticks: { callback: hostBytesTick, stepSize: axis.step, maxTicksLimit: 5 },
         },
       },
       plugins: {
-        legend: { display: false },
+        // A legend only when there is more than one site.
+        legend: {
+          display: sites.length > 1,
+          position: "bottom",
+          labels: { usePointStyle: true, pointStyle: "rect", boxWidth: 22, color: INK_2 },
+        },
         tooltip: { ...tooltipStyle(), callbacks: { label: hostLabel } },
       },
     },

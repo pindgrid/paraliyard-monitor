@@ -1,3 +1,4 @@
+import { bucketFor, bucketNote, firstDataAt, noDataBand, sourceStepFor } from "./chart-shape";
 import { createDrawerChart, type DrawerChart, type DrawerChartFactory, type XYPoint } from "./drawer-chart";
 import { COLORS, groupFor, liveValue, type DrawerGroup } from "./drawer-groups";
 import { DASH, escapeHtml as esc, fmt, istDateTime, istDay, istTick } from "./fmt";
@@ -8,8 +9,9 @@ import { computeStats, csvText, runResult, runsCsvText, type RunRow } from "./st
 import type { HistoryPoint, HistoryRange, HistoryResponse, MetricsResponse, OtherCalls } from "./types";
 
 // The right-hand history drawer: a modal dialog with a scrim, range buttons,
-// one bundled Chart.js chart whose legend also mutes rows of the stats table,
-// and a client-side CSV download. Each series is one HistorySource call.
+// bundled Chart.js panels (bucketed in the browser) whose legends also mute
+// rows of the stats table, and a client-side CSV download of the raw points.
+// Each series is one HistorySource call.
 
 export interface DrawerOptions {
   doc: Document;
@@ -135,6 +137,7 @@ export function createDrawer({ doc, host, source, createChart = createDrawerChar
     <button class="btn" type="button" data-d="csv">Download CSV</button>
   </div>
   <div class="dchart"><canvas data-d="canvas"></canvas><div class="dmsg" data-d="msg" hidden></div></div>
+  <p class="dnote" data-d="note"></p>
   <div data-d="stats"></div>
   <p class="dfoot" data-d="foot"></p>`;
   host.append(scrim, aside);
@@ -194,23 +197,23 @@ export function createDrawer({ doc, host, source, createChart = createDrawerChar
     const failed = results.every((p) => p === null);
     const empty = data.every((d) => d.length === 0);
     message(failed ? "Couldn't load history. Try again in a minute." : empty ? "No data for this range." : "");
+    // Drawn in buckets; the stats table and CSV keep the raw points.
+    const bucketMs = bucketFor(r);
     chart = createChart(part<HTMLCanvasElement>("canvas"), {
       kind: "line",
       from,
       to,
       formatX: istDateTime,
       formatTick: (ms) => istTick(ms, to - from),
-      axes: g.axes,
       formats: g.series.map((s) => s.format),
       datasets: g.series.map((s, i) => ({
         label: s.label,
         color: color(s.color),
-        axis: s.axis,
         data: data[i],
         hidden: !visible[i],
-        fill: s.fill,
-        stepped: s.stepped,
       })),
+      panels: g.panels,
+      panelContext: { bucketMs, sourceStepMs: sourceStepFor(r), band: noDataBand(from, firstDataAt(data), bucketMs) },
       onLegendToggle: (i, shown) => {
         // Ignore a chart from an earlier load.
         if (built !== token || i < 0 || i >= visible.length) return;
@@ -218,10 +221,11 @@ export function createDrawer({ doc, host, source, createChart = createDrawerChar
         renderStats();
       },
     });
+    part("note").textContent = bucketNote(r, [...new Set(g.panels.map((p) => p.kind))]);
     renderStats();
     const count = data.reduce((a, d) => a + d.length, 0);
     part("foot").textContent =
-      `${count.toLocaleString("en-IN")} points from ${istDateTime(from)} to ${istDateTime(to)}. Click a legend item to hide or show a line.` +
+      `${count.toLocaleString("en-IN")} points from ${istDateTime(from)} to ${istDateTime(to)}. Click a legend item to hide or show a series.` +
       (rangeSeconds(r) <= LIVE_APPEND_MAX_SECONDS ? " New points are added live." : "");
   }
 
@@ -241,7 +245,6 @@ export function createDrawer({ doc, host, source, createChart = createDrawerChar
         {
           label: "Run duration (s)",
           color: color("--paddy"),
-          axis: "y",
           data: runRows.map((r) => ({ x: r.t, y: r.durationSec ?? 0 })),
           barColors: runRows.map((r) => color(r.failed ? "--ember" : "--paddy")),
         },
@@ -276,6 +279,7 @@ ${latest
     destroyChart();
     message("Loading history…");
     part("stats").innerHTML = "";
+    part("note").textContent = "";
     part("foot").textContent = "";
     pending = Promise.all(
       g.series.map((s) =>

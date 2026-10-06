@@ -5,6 +5,7 @@ import {
   bytesTick,
   FONT_FAMILY,
   heroConfig,
+  heroData,
   heroTick,
   heroTooltipTitle,
   hostBytesTick,
@@ -62,53 +63,72 @@ describe("theme", () => {
   });
 });
 
+type HeroDataset = { label: string; type: string; tension?: number; stack?: string; data: { x: number; y: number | null }[] };
+type HeroScale = { min?: number; max?: number; position?: string; stacked?: boolean; ticks: { stepSize?: number; maxTicksLimit?: number; callback: (v: number, i?: number, t?: { value: number }[]) => string | null } };
+const heroPanels = (f: ServiceMetrics | undefined) =>
+  heroConfig(f, T).panels.map((p) => ({
+    weight: p.weight,
+    type: p.config.type as string,
+    datasets: p.config.data.datasets as unknown as HeroDataset[],
+    options: p.config.options as unknown as {
+      interaction: unknown;
+      scales: Record<string, HeroScale>;
+      plugins: { legend: { display: boolean; position: string }; tooltip: { enabled: boolean }; yardOverlay: { title: string } };
+    },
+  }));
+
 describe("hero config", () => {
-  it("is a line chart with reads on y (filled) and writes, deletes on y1", () => {
-    const cfg = heroConfig(fs(), T);
-    expect(cfg.type).toBe("line");
-    const ds = cfg.data.datasets;
-    expect(ds.map((d) => d.label)).toEqual(["Reads/min", "Writes/min", "Deletes/min"]);
-    expect(ds.map((d) => d.yAxisID)).toEqual(["y", "y1", "y1"]);
-    expect(ds.map((d) => d.fill)).toEqual(["origin", false, false]);
-    expect(ds[0].data).toHaveLength(30);
-    const reads = fs().recent!.series.readsPerMin!;
-    expect(ds[0].data[29]).toEqual({ x: T, y: reads[29] });
-    expect(ds[0].data.every((p) => p.x > T - 30 * 60000 && p.x <= T)).toBe(true);
+  it("is two stacked bar panels: reads at about 70 % of the height, then writes and deletes", () => {
+    const [reads, writes] = heroPanels(fs());
+    expect(heroConfig(fs(), T).panels).toHaveLength(2);
+    expect([reads.weight, writes.weight]).toEqual([0.7, 0.3]);
+    expect([reads.type, writes.type]).toEqual(["bar", "bar"]);
+    expect(reads.datasets.map((d) => d.label)).toEqual(["Reads"]);
+    expect(writes.datasets.map((d) => d.label)).toEqual(["Writes", "Deletes"]);
+    expect(reads.options.plugins.yardOverlay.title).toBe("Reads per minute");
+    expect(writes.options.plugins.yardOverlay.title).toBe("Writes and deletes per minute");
+    // Writes and deletes stack.
+    expect(writes.datasets.map((d) => d.stack)).toEqual(["avg", "avg"]);
+    expect(writes.options.scales.y.stacked).toBe(true);
   });
 
-  it("has the reads/min and writes, deletes axes and a 30-minute linear x axis", () => {
-    const scales = heroConfig(fs(), T).options!.scales! as Record<string, Record<string, unknown>>;
-    const { x, y, y1 } = scales;
-    expect(y.title).toMatchObject({ display: true, text: "reads/min" });
-    expect(y.grid).toMatchObject({ color: "#D0D6C4" });
-    expect(y1.position).toBe("right");
-    expect(y1.title).toMatchObject({ display: true, text: "writes, deletes" });
-    expect(y1.suggestedMax).toBe(4);
-    expect(y1.grid).toMatchObject({ display: false });
-    expect(x.type).toBe("linear");
-    expect(x.min).toBe(T - 30 * 60000);
-    expect(x.max).toBe(T);
-    const ticks = x.ticks as { stepSize: number; callback: (v: number) => string };
-    expect(ticks.stepSize).toBe(300000);
-    expect(ticks.callback).toBe(heroTick);
-    expect(ticks.callback(T)).toBe("10:36 pm");
+  it("has 30 one-minute buckets, one y axis and tension 0 on each panel", () => {
+    const readsSeries = fs().recent!.series.readsPerMin!;
+    for (const panel of heroPanels(fs())) {
+      expect(Object.keys(panel.options.scales).sort()).toEqual(["x", "y"]);
+      expect(panel.options.scales.y.position).toBeUndefined();
+      for (const d of panel.datasets) {
+        expect(d.data).toHaveLength(30);
+        expect(d.tension).toBe(0);
+      }
+      expect(panel.options.scales.x.min).toBe(T - 30 * 60000);
+      expect(panel.options.scales.x.max).toBe(T);
+      expect(panel.options.scales.x.ticks.callback(T)).toBe("10:36 pm");
+      expect(panel.options.scales.y.ticks.maxTicksLimit).toBe(5);
+    }
+    const reads = heroPanels(fs())[0].datasets[0].data;
+    // Bucket centres; the last bucket is the minute ending at generatedAt.
+    expect(reads[29]).toEqual({ x: T - 30000, y: readsSeries[29] });
+    expect(heroData(fs(), T).map((panel) => panel.map((s) => s.buckets.length))).toEqual([[30], [30, 30]]);
   });
 
-  it("has a bottom point-style legend, index interaction and the ink tooltip", () => {
-    const options = heroConfig(fs(), T).options!;
-    expect(options.plugins!.legend).toMatchObject({ position: "bottom", labels: { usePointStyle: true, pointStyle: "line", boxWidth: 22 } });
-    expect(options.interaction).toEqual({ mode: "index", intersect: false });
-    const tooltip = options.plugins!.tooltip!;
-    expect(tooltip.backgroundColor).toBe("#1F2A1E");
-    expect(tooltip.callbacks!.title).toBe(heroTooltipTitle);
-    expect(tooltip.callbacks!.label).toBe(rateLabel);
+  it("shows a legend only on the writes and deletes panel and uses the shared tooltip", () => {
+    const [reads, writes] = heroPanels(fs());
+    expect(reads.options.plugins.legend.display).toBe(false);
+    expect(writes.options.plugins.legend).toMatchObject({ display: true, position: "bottom" });
+    expect(reads.options.interaction).toEqual({ mode: "index", intersect: false });
+    expect(reads.options.plugins.tooltip.enabled).toBe(false);
+    // The older tooltip callbacks still format the same way.
+    expect(heroTick(T)).toBe("10:36 pm");
     expect(heroTooltipTitle([lineItem("Reads/min", T + 7000, 1)])).toBe("10:36:07 pm");
     expect(heroTooltipTitle([])).toBe("");
     expect(rateLabel(lineItem("Reads/min", T, 51.64))).toBe(" Reads/min: 51.64");
   });
 
-  it("has empty datasets when Firestore is missing", () => {
-    expect(heroConfig(undefined, T).data.datasets.map((d) => d.data)).toEqual([[], [], []]);
+  it("has empty buckets when Firestore is missing", () => {
+    const panels = heroPanels(undefined);
+    expect(panels.flatMap((p) => p.datasets.map((d) => d.data.every((pt) => pt.y === null)))).toEqual([true, true, true]);
+    expect(panels[0].datasets[0].data).toHaveLength(30);
   });
 });
 
@@ -125,11 +145,19 @@ describe("hosting config", () => {
     expect(scales.x.stacked).toBe(true);
     expect(scales.y.stacked).toBe(true);
     expect(scales.x.ticks).toMatchObject({ maxTicksLimit: 6 });
-    // The y ticks format like bytesTick, without repeated labels.
-    const yTicks = scales.y.ticks as { callback: (v: number, i: number, ticks: { value: number }[]) => string | null };
+    // The y ticks show byte units without needless decimals or repeated labels.
+    const yTicks = scales.y.ticks as { callback: (v: number, i: number, ticks: { value: number }[]) => string | null; maxTicksLimit: number };
     expect(yTicks.callback).toBe(hostBytesTick);
-    expect(yTicks.callback(1000, 0, [{ value: 1000 }])).toBe(bytesTick(1000));
+    expect(yTicks.callback(1000, 0, [{ value: 1000 }])).toBe("1 kB");
+    expect(yTicks.callback(1500, 0, [{ value: 1500 }])).toBe("1.5 kB");
+    expect(yTicks.maxTicksLimit).toBe(5);
     expect(bytesTick(1000)).toBe("1.0 kB");
+    // One y axis, no curve, round steps over the stacked sum.
+    expect(Object.keys(scales).sort()).toEqual(["x", "y"]);
+    expect(cfg.data.datasets.every((d) => (d as { tension?: number }).tension === 0)).toBe(true);
+    const top = Math.max(...Array.from({ length: 30 }, (_, i) => cfg.data.datasets.reduce((a, d) => a + (d.data[i] ?? 0), 0)));
+    expect(scales.y.max as number).toBeGreaterThanOrEqual(top);
+    expect((scales.y.max as number) / (yTicks as unknown as { stepSize: number }).stepSize).toBeLessThanOrEqual(4);
   });
 
   it("all-zero data still gets a 0..1 kB y axis with no duplicate tick labels", () => {
@@ -154,9 +182,10 @@ describe("hosting config", () => {
     }
   });
 
-  it("hides the legend and labels tooltips in bytes per minute", () => {
+  it("shows a legend for more than one site and labels tooltips in bytes per minute", () => {
     const options = hostConfig(sites(), T).options!;
-    expect(options.plugins!.legend).toMatchObject({ display: false });
+    expect(options.plugins!.legend).toMatchObject({ display: true, position: "bottom" });
+    expect(hostConfig(sites().slice(0, 1), T).options!.plugins!.legend).toMatchObject({ display: false });
     expect(options.plugins!.tooltip!.backgroundColor).toBe("#1F2A1E");
     expect(options.plugins!.tooltip!.callbacks!.label).toBe(hostLabel);
     expect(hostLabel(barItem("paraliyard", 2000))).toBe(" paraliyard: 2.0 kB/min");

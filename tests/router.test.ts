@@ -120,13 +120,14 @@ describe("router", () => {
     expect(drawerOpen()).toBe(true);
     expect(drawerTitle()).toBe("pyMintOnCrewClaim");
     // The Chart.js legend draws on the canvas; visible series have unmuted stats rows.
+    // Function series all start visible (each has a panel), the linked metric included.
     const rows = [...(aside()?.querySelectorAll<HTMLElement>(".dstats tbody tr") ?? [])];
     expect(rows.map((tr) => [tr.querySelector("td")?.textContent, !tr.classList.contains("muted")])).toEqual([
       ["Requests/min", true],
       ["Errors/min", true],
-      ["Instances", false],
+      ["Instances", true],
       ["CPU % (p99)", true],
-      ["RAM % (p99)", false],
+      ["RAM % (p99)", true],
     ]);
     expect(drawerCalls(calls).every((c) => params(c.url).get("range") === "24h")).toBe(true);
     expect(pageVisible()).toBe(true);
