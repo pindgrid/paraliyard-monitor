@@ -22,7 +22,8 @@ import { crosshairSync, overlayPlugin, type CrosshairSync } from "./chart-plugin
 import { fitYAxis } from "./chart-shape";
 import { applyTheme, heroConfig, heroData, heroWindow, HERO_PANELS, hostAxis, hostConfig, hostData, roundMinuteTicks } from "./page-chart-config";
 import { bucketTooltip } from "./panel-config";
-import type { ServiceMetrics } from "./types";
+import { storageConfig } from "./storage-chart";
+import type { HistoryPoint, ServiceMetrics } from "./types";
 
 Chart.register(LineController, BarController, LineElement, BarElement, PointElement, LinearScale, CategoryScale, Tooltip, Legend, Filler);
 applyTheme(Chart.defaults);
@@ -30,6 +31,8 @@ applyTheme(Chart.defaults);
 export interface PageCharts {
   hero(canvas: HTMLCanvasElement, fs: ServiceMetrics | undefined, generatedAtMs: number): void;
   host(canvas: HTMLCanvasElement, sites: readonly ServiceMetrics[], generatedAtMs: number): void;
+  // Redrawn only when a new points array arrives (at most every 15 min).
+  storage(canvas: HTMLCanvasElement, points: readonly HistoryPoint[], nowMs: number): void;
   destroy(): void;
 }
 
@@ -86,6 +89,7 @@ function swap(chart: Chart, next: ChartConfiguration) {
 export function createPageCharts(): PageCharts {
   let hero: Hero | null = null;
   let hostChart: HostChart | null = null;
+  let storageChart: { chart: Chart; points: readonly HistoryPoint[] } | null = null;
   // The latest hero data, for the shared tooltip.
   let latest: { fs: ServiceMetrics | undefined; at: number } = { fs: undefined, at: 0 };
 
@@ -153,10 +157,21 @@ export function createPageCharts(): PageCharts {
       }
       hostChart.update("none");
     },
+    storage(canvas, points, nowMs) {
+      if (storageChart && storageChart.chart.canvas === canvas && storageChart.points === points) return;
+      storageChart?.chart.destroy();
+      storageChart = null;
+      if (!usable(canvas)) return;
+      const config = storageConfig(points, nowMs);
+      config.plugins = [overlayPlugin as unknown as Plugin];
+      storageChart = { chart: new Chart(canvas, config), points };
+    },
     destroy() {
       destroyHero();
       hostChart?.destroy();
       hostChart = null;
+      storageChart?.chart.destroy();
+      storageChart = null;
     },
   };
 }

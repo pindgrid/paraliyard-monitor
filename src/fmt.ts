@@ -8,9 +8,23 @@ export type Formatter = (v: number | null | undefined) => string;
 
 const isNum = (v: number | null | undefined): v is number => typeof v === "number" && Number.isFinite(v);
 
+// The one number style of the page: "0"; "<0.1"; one decimal below 10
+// ("2.4", "3"); whole numbers from 10 with en-IN grouping ("1,234").
+export const num: Formatter = (v) => {
+  if (!isNum(v)) return DASH;
+  const a = Math.abs(v);
+  if (a === 0) return "0";
+  if (a < 0.1) return "<0.1";
+  if (a < 10) {
+    const r = Math.round(v * 10) / 10;
+    return Number.isInteger(r) ? String(r) : r.toFixed(1);
+  }
+  return Math.round(v).toLocaleString("en-IN");
+};
+
 export const fmt = {
-  rate: ((v) => (isNum(v) ? v.toFixed(2) : DASH)) as Formatter,
-  int: ((v) => (isNum(v) ? (Math.round(v * 10) / 10).toLocaleString("en-IN") : DASH)) as Formatter,
+  rate: num,
+  int: num,
   pct: ((v) => (isNum(v) ? `${Math.round(v)}%` : DASH)) as Formatter,
   seconds: ((v) => (isNum(v) ? `${Math.round(v)}s` : DASH)) as Formatter,
   bytes: ((v) => {
@@ -98,6 +112,13 @@ export function istDateTime(ms: number): string {
   if (!Number.isFinite(ms)) return DASH;
   const p = istParts(ms);
   return `${p.day} ${p.month} ${p.year}, ${p.hour}:${p.minute}:${p.second} ${p.period}`;
+}
+
+// "6 Oct 2026, 2:30 am", or "—" for an invalid time.
+export function istDateMinute(ms: number): string {
+  if (!Number.isFinite(ms)) return DASH;
+  const p = istParts(ms);
+  return `${p.day} ${p.month} ${p.year}, ${p.hour}:${p.minute} ${p.period}`;
 }
 
 // "6 Oct, 2:30 am", or "—" for an invalid time.

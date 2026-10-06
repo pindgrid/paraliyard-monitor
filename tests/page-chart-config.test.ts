@@ -124,7 +124,7 @@ describe("hero config", () => {
     expect(heroTick(T)).toBe("10:36 pm");
     expect(heroTooltipTitle([lineItem("Reads/min", T + 7000, 1)])).toBe("10:36:07 pm");
     expect(heroTooltipTitle([])).toBe("");
-    expect(rateLabel(lineItem("Reads/min", T, 51.64))).toBe(" Reads/min: 51.64");
+    expect(rateLabel(lineItem("Reads/min", T, 51.64))).toBe(" Reads/min: 52");
   });
 
   it("both panels share the y width; only writes and deletes labels the 5-minute time ticks", () => {

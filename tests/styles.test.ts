@@ -42,38 +42,42 @@ describe("styles.css", () => {
   });
 
   it("keeps the breakpoints, focus-visible and reduced-motion rules", () => {
-    for (const width of [780, 820, 880, 940]) expect(css).toContain(`@media (max-width: ${width}px)`);
+    for (const width of [480, 768, 900, 1023, 1199]) expect(css).toContain(`@media (max-width: ${width}px)`);
     expect(css).toMatch(/:focus-visible\s*\{[^}]*outline/);
     expect(css).toMatch(/@media \(prefers-reduced-motion: reduce\)/);
   });
 
-  it("caps the hero's left column at 300px, makes it a size container, fits the big number and keeps a single column at 780px", () => {
-    const hero = css.match(/(?:^|\n)\.hero\s*\{([^}]*)\}/)?.[1] ?? "";
-    const columns = hero.match(/grid-template-columns:\s*([^;]+);/)?.[1] ?? "";
-    expect(columns).toMatch(/^minmax\(230px,\s*300px\)\s+1fr$/);
-    expect(hero).not.toContain("max-content");
+  it("lays the page out as cards on a 1440px grid: KPI row of 5, equal-height storage and hosting", () => {
+    expect(css.match(/\.wrap\s*\{([^}]*)\}/)?.[1]).toMatch(/max-width:\s*1440px/);
+    const card = css.match(/(?:^|\n)\.card\s*\{([^}]*)\}/)?.[1] ?? "";
+    expect(card).toMatch(/background:\s*var\(--surface\)/);
+    expect(card).toMatch(/border:\s*1px solid var\(--rule\)/);
+    expect(card).toMatch(/border-radius:\s*var\(--radius\)/);
+    expect(css).toMatch(/--radius:\s*12px/);
+    expect(css.match(/\.kpis\s*\{([^}]*)\}/)?.[1]).toMatch(/grid-template-columns:\s*repeat\(5,/);
+    const pair = css.match(/\.pair\s*\{([^}]*)\}/)?.[1] ?? "";
+    expect(pair).toMatch(/grid-template-columns:\s*repeat\(2,/);
+    expect(pair).toMatch(/align-items:\s*stretch/);
+    expect(css).toMatch(/@media \(max-width: 1023px\) \{ \.pair \{ grid-template-columns: 1fr; \} \}/);
+  });
 
-    const left = css.match(/\.hero\s*>\s*:first-child\s*\{([^}]*)\}/)?.[1] ?? "";
-    expect(left).toMatch(/container-type:\s*inline-size|container:[^;]*\/\s*inline-size/);
+  it("gives the Firestore numbers a 280px column that the big number always fits, one column at 900px", () => {
+    const body = css.match(/\.hero-body\s*\{([^}]*)\}/)?.[1] ?? "";
+    expect(body.match(/grid-template-columns:\s*([^;]+);/)?.[1]).toBe("280px minmax(0, 1fr)");
+    expect(css.match(/\.hero-side\s*\{([^}]*)\}/)?.[1]).toMatch(/container-type:\s*inline-size/);
 
     const bignum = css.match(/\.bignum\s*\{([^}]*)\}/)?.[1] ?? "";
     const clamp = bignum.match(/font-size:\s*clamp\((\d+)px,\s*(\d+(?:\.\d+)?)cqi,\s*(\d+)px\)/);
     expect(clamp).not.toBeNull();
     const [min, n, max] = [Number(clamp![1]), Number(clamp![2]), Number(clamp![3])];
-    expect(n).toBeLessThanOrEqual(20);
-    expect(max).toBeLessThanOrEqual(64);
     expect(bignum).toMatch(/white-space:\s*nowrap/);
     expect(bignum).toMatch(/max-width:\s*100%/);
-    for (const value of ["1,234.56", "130.00", "160.00"]) {
-      expect(value.length * 0.62 * max, value).toBeLessThanOrEqual(300);
-      expect(value.length * 0.62 * Math.max(min, (n * 230) / 100), value).toBeLessThanOrEqual(230);
+    // Whole numbers from 10 (src/fmt.ts), so the widest realistic value is "12,345".
+    for (const value of ["12,345", "1,234", "9.9", "0"]) {
+      const size = Math.min(max, Math.max(min, (n * 280) / 100));
+      expect(value.length * 0.62 * size, value).toBeLessThanOrEqual(280);
     }
-
-    const hint = css.match(/\.hint\s*\{([^}]*)\}/)?.[1] ?? "";
-    expect(hint).not.toMatch(/nowrap/);
-    expect(hint).not.toMatch(/width:/);
-
-    expect(css).toMatch(/@media \(max-width: 780px\) \{ \.hero \{ grid-template-columns: 1fr;/);
+    expect(css).toMatch(/@media \(max-width: 900px\) \{ \.hero-body \{ grid-template-columns: 1fr;/);
   });
 
   it("has no CSS for the removed SVG charts, select, inline legend or drawer legend buttons", () => {

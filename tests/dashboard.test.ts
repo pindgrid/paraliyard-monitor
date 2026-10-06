@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
-import { destroyDashboard, renderDashboard, type DashboardStatus } from "../src/dashboard";
+import { destroyDashboard, healthOf, renderDashboard, type DashboardStatus } from "../src/dashboard";
+import { num } from "../src/fmt";
 import { bindOpeners } from "../src/drawer";
 import { createPageCharts } from "../src/page-charts";
 import { createMockSource } from "../src/source";
@@ -86,8 +87,8 @@ describe("renderDashboard sections (mock fixture)", () => {
     renderDashboard(root, data, status());
     const hero = root.querySelector('[data-section="hero"]')!;
     const reads = service("firestore:yard").recent!.series.readsPerMin!;
-    expect(text(hero.querySelector('[data-hero="reads"]'))).toBe((reads[29] as number).toFixed(2));
-    expect(text(hero.querySelector('[data-hero="peak"]'))).toBe(Math.max(...(reads as number[])).toFixed(2));
+    expect(text(hero.querySelector('[data-hero="reads"]'))).toBe(num(reads[29] as number));
+    expect(text(hero.querySelector('[data-hero="peak"]'))).toBe(num(Math.max(...(reads as number[]))));
     // The "reads/min" axis title is drawn by Chart.js (tests/page-chart-config.test.ts).
     for (const label of ["document reads per minute", "Writes/min", "Deletes/min", "Peak, 30 min"]) {
       expect(text(hero)).toContain(label);
@@ -136,7 +137,7 @@ describe("renderDashboard sections (mock fixture)", () => {
     renderDashboard(root, data, status());
     const storage = root.querySelector('[data-section="storage"]')!;
     expect(text(storage.querySelector("h2"))).toBe("Storage buckets");
-    expect(text(storage.querySelector(".block-head p"))).toBe("53.7 MB total");
+    expect(text(storage.querySelector(".card-meta"))).toBe("53.7 MB total");
     expect([...storage.querySelectorAll(".bucket .name")].map(text)).toEqual(["paraliyard", "yard-backups"]);
     const hosting = root.querySelector('[data-section="hosting"]')!;
     expect(text(hosting.querySelector("h2"))).toBe("Firebase Hosting");
@@ -150,7 +151,7 @@ describe("renderDashboard sections (mock fixture)", () => {
     expect(text(jobs[0].querySelector(".next strong"))).toBe("in 12h 30m");
     // Sunday 11 Oct 03:00 IST.
     expect(text(jobs[1].querySelector(".next strong"))).toBe("in 5d 13h");
-    expect(text(jobs[0].querySelector(".last"))).toContain("success");
+    expect(text(jobs[0].querySelector(".result"))).toBe("success");
     for (const job of jobs) expect(job.querySelectorAll(".days i")).toHaveLength(14);
   });
 
@@ -293,8 +294,8 @@ describe("times (IST, 12-hour, no suffix)", () => {
     expect(text(root.querySelector("header.top"))).toContain("Updated 11:07:01 pm");
     const job = root.querySelector<HTMLElement>('[data-job-id="scheduler:pyNightlyExport"]')!;
     const last = job.querySelector(".last")!;
-    expect(text(last).startsWith("around 5 Oct 2026, 2:35:47 am")).toBe(true);
-    expect(text(last.querySelector(".badge"))).toBe("success");
+    expect(text(last)).toBe("5 Oct 2026, 2:35 am");
+    expect(text(job.querySelector(".result .badge"))).toBe("success");
     const nextMeta = job.querySelectorAll(".next .meta");
     expect(text(nextMeta[nextMeta.length - 1])).toBe("6 Oct, 2:30 am");
     expect(text(job.querySelector(".next strong"))).toBe("in 3h 22m");
@@ -305,7 +306,10 @@ describe("times (IST, 12-hour, no suffix)", () => {
     const all = text(root);
     expect(all.split("Times in IST").length - 1).toBeLessThanOrEqual(1);
     expect(all.replace("Times in IST", "")).not.toContain(" IST");
-    expect(text(root.querySelector('[data-section="jobs"] .block-head p'))).toBe("Each square is one day; green ran successfully, red failed.");
+    expect(text(root.querySelector('[data-section="jobs"] .card-desc'))).toBe(
+      "Each square is one day: green, the scheduled run succeeded; red, it failed or was missed.",
+    );
+    expect(text(root.querySelector("[data-footer]"))).toContain("Times in IST");
   });
 });
 
@@ -348,10 +352,10 @@ describe("last run badge", () => {
     nightly.metrics.lastRunAt = "2026-10-04T21:00:00.000Z";
     nightly.metrics.lastResult = "missed";
     renderDashboard(root, data, status());
-    const badge = root.querySelector('[data-job-id="scheduler:pyNightlyExport"] .last .badge')!;
+    const badge = root.querySelector('[data-job-id="scheduler:pyNightlyExport"] .result .badge')!;
     expect(text(badge)).toBe("missed");
     expect(badge.classList.contains("fail")).toBe(true);
-    expect(text(root.querySelector('[data-job-id="scheduler:pyNightlyExport"] .last'))).toContain("5 Oct 2026, 2:30:00 am");
+    expect(text(root.querySelector('[data-job-id="scheduler:pyNightlyExport"] .last'))).toBe("5 Oct 2026, 2:30 am");
   });
 });
 
@@ -374,5 +378,100 @@ describe("paused without data (off mode)", () => {
     expect(refresh.every((b) => b.disabled)).toBe(true);
     expect(root.querySelector<HTMLButtonElement>('button[data-action="pause"]')?.disabled).toBe(true);
     expect(root.querySelectorAll("[data-open]")).toHaveLength(0);
+  });
+});
+
+describe("page order and cards", () => {
+  it("renders KPI cards first, then Firestore, functions, storage + hosting, scheduler, and a footer", () => {
+    renderDashboard(root, data, status());
+    const order = [...root.querySelectorAll<HTMLElement>("[data-sections] > [data-section]")].map((el) => el.dataset.section);
+    expect(order).toEqual(["strip", "hero", "functions", "storage-hosting", "jobs"]);
+    for (const id of ["hero", "functions", "storage", "hosting", "jobs"]) {
+      const card = root.querySelector<HTMLElement>(`[data-section="${id}"]`)!;
+      expect(card.classList.contains("card"), id).toBe(true);
+      expect(card.querySelector(".card-head h2"), id).not.toBeNull();
+      expect(card.querySelector(".card-head .card-desc"), id).not.toBeNull();
+    }
+    expect(root.querySelectorAll('[data-section="strip"] .kpi')).toHaveLength(5);
+    expect(root.querySelector(".storage-chart canvas")).not.toBeNull();
+    expect(text(root.querySelector("[data-footer]"))).toContain("Data from Google Cloud Monitoring (read-only)");
+  });
+
+  it("gives the scheduler table its headings and keeps the badge in its own column", () => {
+    renderDashboard(root, data, status());
+    const heads = [...root.querySelectorAll('[data-section="jobs"] thead th')].map(text);
+    expect(heads).toEqual(["Job", "Schedule", "Last run", "Result", "Last 14 days", "Next run"]);
+    const job = root.querySelector('[data-job-id="scheduler:pyNightlyExport"]')!;
+    expect(job.querySelector(".last .badge")).toBeNull();
+    expect(job.querySelector(".result .badge")).not.toBeNull();
+  });
+
+  it("shows a message in the storage chart until its history loads, then draws it", () => {
+    renderDashboard(root, data, status());
+    const msg = () => root.querySelector<HTMLElement>("[data-storage-msg]")!;
+    expect(msg().hidden).toBe(false);
+    expect(text(msg())).toBe("Loading storage history…");
+    renderDashboard(root, data, status({ storageGrowth: null }));
+    expect(text(msg())).toBe("Storage history not available");
+    const points: HistoryPoint[] = [{ t: "2026-10-04T00:00:00.000Z", v: 40e6 }];
+    renderDashboard(root, data, status({ storageGrowth: points }));
+    expect(msg().hidden).toBe(true);
+    const charts = vi.mocked(createPageCharts).mock.results.at(-1)!.value as { storage: Mock };
+    expect(charts.storage).toHaveBeenCalledWith(root.querySelector(".storage-chart canvas"), points, expect.any(Number));
+  });
+});
+
+describe("overall status", () => {
+  const clearErrors = () => {
+    for (const s of data.services) {
+      const errs = s.recent?.series.errPerMin;
+      if (s.recent && errs) s.recent.series.errPerMin = errs.map(() => 0);
+    }
+  };
+  const jobsSucceeded = () => {
+    for (const s of data.services.filter((x) => x.kind === "scheduler")) s.metrics.lastResult = "success";
+  };
+
+  it("is healthy without function errors and with successful jobs", () => {
+    clearErrors();
+    jobsSucceeded();
+    expect(healthOf(data)).toEqual({ ok: true, text: "All healthy", open: "sum:requests" });
+    renderDashboard(root, data, status());
+    const pill = root.querySelector<HTMLElement>("[data-status]")!;
+    expect(pill.hidden).toBe(false);
+    expect(pill.classList.contains("ok")).toBe(true);
+    expect(text(pill)).toBe("All healthy");
+  });
+
+  it("names every reason: function errors first, then failed or missed jobs", () => {
+    clearErrors();
+    jobsSucceeded();
+    const fn = service("function2:pyMintOnCrewClaim");
+    fn.recent!.series.errPerMin = fn.recent!.series.errPerMin!.map((_, i) => (i === 3 ? 2 : 0));
+    service("scheduler:pyNightlyExport").metrics.lastResult = "missed";
+    const health = healthOf(data);
+    expect(health).toEqual({
+      ok: false,
+      text: "Needs attention: 2 function errors in 30 min · pyNightlyExport missed",
+      open: "sum:errors",
+    });
+    renderDashboard(root, data, status());
+    const pill = root.querySelector<HTMLElement>("[data-status]")!;
+    expect(pill.classList.contains("warn")).toBe(true);
+    expect(pill.dataset.open).toBe("sum:errors");
+  });
+
+  it("opens the failed job when that is the only reason", () => {
+    clearErrors();
+    jobsSucceeded();
+    service("scheduler:pyWeeklyAccounts").metrics.lastResult = "failed";
+    expect(healthOf(data)).toEqual({ ok: false, text: "Needs attention: pyWeeklyAccounts failed", open: "job:scheduler:pyWeeklyAccounts" });
+  });
+
+  it("is hidden while loading and with the kill switch on", () => {
+    renderDashboard(root, null, status());
+    expect(root.querySelector<HTMLElement>("[data-status]")!.hidden).toBe(true);
+    renderDashboard(root, data, status({ off: true }));
+    expect(root.querySelector<HTMLElement>("[data-status]")!.hidden).toBe(true);
   });
 });

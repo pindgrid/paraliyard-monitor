@@ -45,12 +45,14 @@ function params(url: string) {
   return new URL(url, "http://x").searchParams;
 }
 
-// History requests made by the drawer (the day squares' runs loads excluded).
+// History requests made by the drawer (the page's own 30-day loads excluded:
+// the day squares' runs and the storage card's growth chart).
 function drawerCalls(calls: Call[]) {
   return calls.filter((c) => {
     if (!c.url.startsWith("/api/history")) return false;
     const p = params(c.url);
-    return !(p.get("metric") === "runs" && p.get("range") === "30d");
+    if (p.get("range") !== "30d") return true;
+    return !(p.get("metric") === "runs" || (p.get("service") === "total:bucket" && p.get("metric") === "bytesStored"));
   });
 }
 

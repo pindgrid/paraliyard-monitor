@@ -10,7 +10,7 @@ vi.mock("../src/drawer-chart", () => ({
 // Same for the page's hero and hosting charts. Dashboard tests inspect the
 // calls with vi.mocked(createPageCharts).
 vi.mock("../src/page-charts", () => ({
-  createPageCharts: vi.fn(() => ({ hero: vi.fn(), host: vi.fn(), destroy: vi.fn() })),
+  createPageCharts: vi.fn(() => ({ hero: vi.fn(), host: vi.fn(), storage: vi.fn(), destroy: vi.fn() })),
 }));
 
 // Tests must never touch the network: any un-stubbed fetch fails loudly.

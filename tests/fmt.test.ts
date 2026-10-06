@@ -1,5 +1,38 @@
 import { describe, expect, it } from "vitest";
-import { BYTE_AXIS_MIN, DASH, fmt, istDateTime, istDay, istDayTime, istShortTime, istTick, istTime, uniqueTicks } from "../src/fmt";
+import { BYTE_AXIS_MIN, DASH, fmt, istDateMinute, istDateTime, istDay, istDayTime, istShortTime, istTick, istTime, num, uniqueTicks } from "../src/fmt";
+
+describe("num: the one number style of the page", () => {
+  it("shows 0, <0.1, one decimal below 10 and whole numbers with en-IN grouping from 10", () => {
+    expect(num(0)).toBe("0");
+    expect(num(0.004)).toBe("<0.1");
+    expect(num(0.25)).toBe("0.3");
+    expect(num(2.44)).toBe("2.4");
+    expect(num(3)).toBe("3");
+    expect(num(9.96)).toBe("10");
+    expect(num(15)).toBe("15");
+    expect(num(292.4)).toBe("292");
+    expect(num(1234.5)).toBe("1,235");
+    expect(num(123456)).toBe("1,23,456");
+    expect(num(null)).toBe(DASH);
+    expect(num(Number.NaN)).toBe(DASH);
+  });
+
+  it("is what fmt.rate and fmt.int use, so no page number shows needless decimals", () => {
+    for (const v of [0, 0.05, 2.44, 15, 1234.5]) {
+      expect(fmt.rate(v)).toBe(num(v));
+      expect(fmt.int(v)).toBe(num(v));
+    }
+    expect(fmt.rate(0)).not.toBe("0.00");
+  });
+});
+
+describe("istDateMinute", () => {
+  it("formats a run time to the minute, without seconds", () => {
+    // 6 Oct 2026, 2:30 am IST.
+    expect(istDateMinute(Date.UTC(2026, 9, 5, 21, 0, 0))).toBe("6 Oct 2026, 2:30 am");
+    expect(istDateMinute(Number.NaN)).toBe(DASH);
+  });
+});
 
 // The ticks Chart.js would generate from min to max in steps.
 function ticksOf(min: number, max: number, step: number): { value: number }[] {

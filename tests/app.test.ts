@@ -39,6 +39,8 @@ const RUNS_URLS = [
   "/api/history?service=scheduler%3ApyNightlyExport&metric=runs&range=30d",
   "/api/history?service=scheduler%3ApyWeeklyAccounts&metric=runs&range=30d",
 ];
+// The storage card's growth chart (at most every 15 minutes).
+const STORAGE_URL = "/api/history?service=total%3Abucket&metric=bytesStored&range=30d";
 
 function setVisibility(state: "visible" | "hidden") {
   Object.defineProperty(document, "visibilityState", { configurable: true, get: () => state });
@@ -118,7 +120,7 @@ describe("mock mode", () => {
 });
 
 describe("live mode", () => {
-  it("requests only /api/metrics, once per refreshSeconds, plus the runs history", async () => {
+  it("requests only /api/metrics, once per refreshSeconds, plus the runs and storage history", async () => {
     const { fetchFn, calls } = stubFetch({ metrics: () => fakeResponse(sample) });
     app = await startApp({ root, fetchFn, config: live });
     await vi.advanceTimersByTimeAsync(0);
@@ -131,9 +133,12 @@ describe("live mode", () => {
     expect(metrics).toHaveLength(6);
     const gaps = metrics.slice(1).map((c, i) => c.at - metrics[i].at);
     expect(gaps).toEqual([REFRESH, REFRESH, REFRESH, REFRESH, REFRESH]);
-    // Everything else is the two runs requests after the first load (at most every 10 minutes).
+    // Everything else is the two runs requests and the storage growth request
+    // after the first load (at most every 10 and 15 minutes).
     const others = calls.filter((c) => c.url !== "/api/metrics");
-    expect(others.map((c) => c.url)).toEqual(RUNS_URLS);
+    expect(others.map((c) => c.url)).toEqual([...RUNS_URLS, STORAGE_URL]);
+    await vi.advanceTimersByTimeAsync(15 * 60 * 1000);
+    expect(calls.filter((c) => c.url === STORAGE_URL)).toHaveLength(2);
   });
 
   it("uses the configured refreshSeconds, snapped to 30s, 60s or 5m", async () => {

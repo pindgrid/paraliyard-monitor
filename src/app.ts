@@ -8,6 +8,7 @@ import { createPoller, type Poller } from "./poller";
 import { isRefreshSeconds, loadRefresh, pollIntervalMs, saveRefresh, snapRefresh } from "./refresh";
 import { SERVICES } from "./services";
 import { createLiveSource, createMockSource } from "./source";
+import { STORAGE_RANGE, STORAGE_RELOAD_MS } from "./storage-chart";
 import type { Config, HistoryPoint, HistoryRange, MetricsResponse } from "./types";
 
 // Open tabs in live mode re-read /config.json this often to honour the kill switch.
@@ -68,6 +69,9 @@ export async function startApp({ root, fetchFn = fetch, doc = document, config, 
   let retrySeconds: number | undefined;
   let runs: Record<string, readonly HistoryPoint[] | null> = {};
   let lastRunsLoadAt: number | null = null;
+  // undefined until the first load finishes; null when it failed.
+  let storageGrowth: readonly HistoryPoint[] | null | undefined;
+  let lastStorageLoadAt: number | null = null;
   let lastFetchAt: number | null = null;
   let poller: Poller | null = null;
   let configPoller: Poller | null = null;
@@ -84,6 +88,7 @@ export async function startApp({ root, fetchFn = fetch, doc = document, config, 
       paused,
       nowMs: Date.now(),
       runs,
+      storageGrowth,
     });
 
   const drawer = createDrawer({
@@ -116,6 +121,21 @@ export async function startApp({ root, fetchFn = fetch, doc = document, config, 
     render();
   }
 
+  // Storage card chart: total bytes stored over 30 days, at most once per
+  // STORAGE_RELOAD_MS (failed or not). A failure keeps the last good points.
+  async function maybeLoadStorage() {
+    const t = Date.now();
+    if (lastStorageLoadAt !== null && t - lastStorageLoadAt < STORAGE_RELOAD_MS) return;
+    lastStorageLoadAt = t;
+    const points = await historySource.load("total:bucket", "bytesStored", STORAGE_RANGE).then(
+      (res) => res.points,
+      () => null,
+    );
+    if (stopped) return;
+    storageGrowth = points ?? storageGrowth ?? null;
+    render();
+  }
+
   async function tick() {
     lastFetchAt = Date.now();
     try {
@@ -127,6 +147,7 @@ export async function startApp({ root, fetchFn = fetch, doc = document, config, 
       render();
       drawer.appendLive(data);
       void maybeLoadRuns();
+      void maybeLoadStorage();
     } catch (err) {
       if (!stopped) {
         state = "offline";
