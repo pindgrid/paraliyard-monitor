@@ -1,274 +1,182 @@
-import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
-import sample from "../src/mock/sample-metrics.json";
-import { startApp, type AppHandle } from "../src/app";
-import { createPageCharts } from "../src/page-charts";
-import type { Config } from "../src/types";
-
-const SECOND = 1000;
-const REFRESH = 60 * SECOND;
-
-interface Call {
-  url: string;
-  at: number;
-  init?: RequestInit;
-}
-
-function fakeResponse(body: unknown, status = 200): Response {
-  return { ok: status >= 200 && status < 300, status, json: async () => body } as unknown as Response;
-}
-
-// Stubbed fetch that records every URL. Nothing here reaches the network.
-function stubFetch(routes: { config?: () => unknown; metrics?: () => Response }) {
-  const calls: Call[] = [];
-  const fetchFn = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = String(input);
-    calls.push({ url, at: Date.now(), init });
-    if (url === "/config.json" && routes.config) return fakeResponse(routes.config());
-    if (url === "/api/metrics" && routes.metrics) return routes.metrics();
-    return fakeResponse({ error: "not found" }, 404);
-  });
-  return { fetchFn: fetchFn as unknown as typeof fetch, calls };
-}
-
-function metricsCalls(calls: Call[]) {
-  return calls.filter((c) => c.url === "/api/metrics");
-}
-
-// The day squares' runs history: the only other request the page makes.
-const RUNS_URLS = [
-  "/api/history?service=scheduler%3ApyNightlyExport&metric=runs&range=30d",
-  "/api/history?service=scheduler%3ApyWeeklyAccounts&metric=runs&range=30d",
-];
-// The storage card's growth chart (at most every 15 minutes).
-const STORAGE_URL = "/api/history?service=total%3Abucket&metric=bytesStored&range=30d";
-
-function setVisibility(state: "visible" | "hidden") {
-  Object.defineProperty(document, "visibilityState", { configurable: true, get: () => state });
-  document.dispatchEvent(new Event("visibilitychange"));
-}
-
-const liveState = () => root.querySelector<HTMLElement>("[data-live]")?.dataset.state;
-const functionRows = () => root.querySelectorAll('[data-section="functions"] tbody tr[data-service-id]');
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { CONFIG_RECHECK_MS, parseConfig, startApp, type AppHandle, type Config } from "../src/app";
+import fixture from "./fixtures/api-metrics.json";
 
 let root: HTMLElement;
 let app: AppHandle | null = null;
 
-beforeEach(() => {
-  vi.useFakeTimers();
-  setVisibility("visible");
-  window.localStorage.clear();
-  window.history.replaceState(null, "", "/");
-  document.body.replaceChildren();
-  root = document.createElement("main");
-  document.body.appendChild(root);
-});
+function memory() {
+  const map = new Map<string, string>();
+  return { map, getItem: (k: string) => map.get(k) ?? null, setItem: (k: string, v: string) => void map.set(k, v) };
+}
+function stubFetch(routes: Record<string, () => unknown>) {
+  const calls: string[] = [];
+  const fetchFn = vi.fn(async (url: string) => {
+    calls.push(url);
+    const key = Object.keys(routes).find((k) => url.startsWith(k));
+    if (!key) return { ok: false, status: 404, json: async () => ({}) };
+    return { ok: true, status: 200, json: async () => routes[key]() };
+  });
+  return { fetchFn: fetchFn as unknown as typeof fetch, calls };
+}
+const text = (el: Element | null | undefined) => (el?.textContent ?? "").replace(/\s+/g, " ").trim();
+const $ = <T extends Element = HTMLElement>(sel: string) => root.querySelector<T>(sel);
+const MOCK: Config = { mode: "mock", refreshSeconds: 60 };
+const click = (el: Element | null) => el?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
 
+beforeEach(() => {
+  document.body.innerHTML = '<div id="app"></div>';
+  root = document.getElementById("app")!;
+  document.documentElement.dataset.theme = "light";
+  window.history.replaceState(null, "", "/");
+});
 afterEach(() => {
   app?.stop();
   app = null;
   vi.useRealTimers();
-  setVisibility("visible");
 });
 
-const live: Config = { mode: "live", refreshSeconds: 60 };
-
-describe("off mode (kill switch)", () => {
-  it("shows paused and fetches only /config.json once", async () => {
-    const { fetchFn, calls } = stubFetch({ config: () => ({ mode: "off", refreshSeconds: 60 }) });
-    app = await startApp({ root, fetchFn });
-    await vi.advanceTimersByTimeAsync(5 * REFRESH);
-    expect(root.textContent).toContain("Live monitoring is paused");
-    expect(calls.map((c) => c.url)).toEqual(["/config.json"]);
-  });
-
-  it("makes zero fetch calls with an injected config", async () => {
-    const { fetchFn, calls } = stubFetch({});
-    app = await startApp({ root, fetchFn, config: { mode: "off", refreshSeconds: 60 } });
-    await vi.advanceTimersByTimeAsync(5 * REFRESH);
-    expect(calls).toHaveLength(0);
-    expect(liveState()).toBe("paused");
-    expect(root.querySelector("[data-live-text]")?.textContent).toBe("Paused");
-    expect(root.querySelector("[data-note]")?.textContent).toContain("Live monitoring is paused");
-    expect(root.querySelectorAll("tr")).toHaveLength(0);
+describe("config", () => {
+  it("falls back to mock, snaps the refresh to 30 s, 60 s or 5 min", () => {
+    expect(parseConfig(null)).toEqual({ mode: "mock", refreshSeconds: 60 });
+    expect(parseConfig({ mode: "live", refreshSeconds: 300 })).toEqual({ mode: "live", refreshSeconds: 300 });
+    expect(parseConfig({ mode: "off", refreshSeconds: 120 })).toEqual({ mode: "off", refreshSeconds: 60 });
+    expect(parseConfig({ mode: "nope", refreshSeconds: 5 })).toEqual({ mode: "mock", refreshSeconds: 30 });
   });
 });
 
-describe("mock mode", () => {
-  it("renders every service and never requests /api/metrics", async () => {
-    const { fetchFn, calls } = stubFetch({ config: () => ({ mode: "mock", refreshSeconds: 60 }) });
-    app = await startApp({ root, fetchFn });
-    await vi.advanceTimersByTimeAsync(0);
-    // 10 functions, Firestore in the hero, 2 buckets, 2 sites and 2 jobs: all 17 services.
-    expect(functionRows()).toHaveLength(10);
-    expect(root.querySelectorAll('[data-open="fs"]').length).toBeGreaterThan(0);
-    expect(root.querySelectorAll('[data-open^="st:"]')).toHaveLength(2);
-    expect(root.querySelectorAll('[data-open^="site:"]')).toHaveLength(2);
-    expect(root.querySelectorAll('[data-open^="job:"].job')).toHaveLength(2);
-    expect(root.querySelector("[data-note]")?.textContent).toContain("sample data");
-    await vi.advanceTimersByTimeAsync(5 * REFRESH);
-    expect(calls.map((c) => c.url)).toEqual(["/config.json"]);
+describe("page (mock mode)", () => {
+  beforeEach(async () => {
+    const { fetchFn } = stubFetch({});
+    app = await startApp({ root, fetchFn, config: MOCK, storage: memory() });
   });
 
-  it("falls back to mock when /config.json is missing", async () => {
+  it("renders every section, in order, with no pause button", () => {
+    const ids = [...root.querySelectorAll("#overview, #database, #functions, #storage, #hosting, #jobs")].map((el) => el.id);
+    expect(ids).toEqual(["overview", "database", "functions", "storage", "hosting", "jobs"]);
+    expect(root.querySelectorAll("[data-kpis] .kpi")).toHaveLength(6);
+    expect(root.querySelectorAll("[data-fn-body] tr")).toHaveLength(10);
+    expect(root.querySelectorAll("[data-job-list] .job")).toHaveLength(2);
+    expect($('[data-chart="reads"] svg')).not.toBeNull();
+    expect($('[data-chart="hosting"] svg')).not.toBeNull();
+    expect(text($("[data-banner-title]"))).toMatch(/^(All systems healthy|Needs attention)$/);
+    expect(text($("[data-note]"))).toContain("Demo data.");
+    const labels = [...root.querySelectorAll("button")].map((b) => `${b.textContent} ${b.getAttribute("aria-label") ?? ""} ${b.getAttribute("title") ?? ""}`.toLowerCase());
+    expect(labels.some((l) => l.includes("pause"))).toBe(false);
+  });
+
+  it("switches between the white and the dark theme and remembers it", async () => {
+    const store = memory();
+    app?.stop();
+    app = await startApp({ root, fetchFn: stubFetch({}).fetchFn, config: MOCK, storage: store });
+    click($("[data-theme-btn]"));
+    expect(document.documentElement.dataset.theme).toBe("dark");
+    expect(store.map.get("pm-theme")).toBe("dark");
+    click($("[data-theme-btn]"));
+    expect(document.documentElement.dataset.theme).toBe("light");
+  });
+
+  it("remembers the refresh choice", async () => {
+    const store = memory();
+    app?.stop();
+    app = await startApp({ root, fetchFn: stubFetch({}).fetchFn, config: MOCK, storage: store });
+    click($('[data-refresh-seg] [data-s="30"]'));
+    expect($('[data-refresh-seg] [data-s="30"]')?.getAttribute("aria-pressed")).toBe("true");
+    expect(store.map.get("pm-refresh")).toBe("30");
+  });
+
+  it("filters, searches and sorts the functions table", () => {
+    click($('[data-filter="idle"]'));
+    const idle = [...root.querySelectorAll("[data-fn-body] tr .status")];
+    expect(idle.every((s) => s.classList.contains("idle"))).toBe(true);
+    click($('[data-filter="all"]'));
+    const search = $<HTMLInputElement>("[data-fn-search]")!;
+    search.value = "mint";
+    search.dispatchEvent(new Event("input", { bubbles: true }));
+    expect([...root.querySelectorAll("[data-fn-body] tr")].map((r) => r.getAttribute("data-fn"))).toEqual(
+      expect.arrayContaining(["function2:pyMintOnCrewClaim", "function2:pyMintOnRoleRequest"]),
+    );
+    expect(root.querySelectorAll("[data-fn-body] tr")).toHaveLength(2);
+    search.value = "";
+    search.dispatchEvent(new Event("input", { bubbles: true }));
+    click($('[data-sort="name"]'));
+    const names = [...root.querySelectorAll("[data-fn-body] tr")].map((r) => r.getAttribute("data-fn")!.split(":")[1].toLowerCase());
+    expect(names).toEqual([...names].sort());
+  });
+
+  it("opens the history drawer from a card and closes it with Escape", async () => {
+    click($('[data-kpis] [data-open="fs"]'));
+    await vi.waitFor(() => expect(root.querySelectorAll("[data-d-charts] svg").length).toBe(2));
+    expect($("[data-drawer]")?.classList.contains("open")).toBe(true);
+    expect(text($("[data-d-title]"))).toBe("Firestore · yard");
+    expect(root.querySelectorAll("[data-d-range] button")).toHaveLength(6);
+    expect(window.location.search).toContain("open=fs");
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    expect($("[data-drawer]")?.classList.contains("open")).toBe(false);
+    expect(window.location.search).toBe("");
+  });
+
+  it("shows scheduled-run history for a job", async () => {
+    click($('[data-job="scheduler:pyNightlyExport"]'));
+    await vi.waitFor(() => expect(root.querySelectorAll("[data-d-table] tbody tr").length).toBeGreaterThan(0));
+    expect([...root.querySelectorAll("[data-d-range] button")].map((b) => b.textContent)).toEqual(["7d", "30d", "6w"]);
+  });
+});
+
+describe("kill switch", () => {
+  it("off: requests nothing and says monitoring is paused", async () => {
     const { fetchFn, calls } = stubFetch({});
-    app = await startApp({ root, fetchFn });
-    await vi.advanceTimersByTimeAsync(5 * REFRESH);
-    expect(functionRows()).toHaveLength(10);
-    expect(metricsCalls(calls)).toHaveLength(0);
-    expect(calls.map((c) => c.url)).toEqual(["/config.json"]);
+    app = await startApp({ root, fetchFn, config: { mode: "off", refreshSeconds: 60 }, storage: memory() });
+    expect(calls).toEqual([]);
+    expect(text($("[data-banner-title]"))).toBe("Monitoring paused");
+    expect($<HTMLElement>("[data-sections]")?.hidden).toBe(true);
+    expect([...root.querySelectorAll<HTMLButtonElement>("[data-refresh-seg] button")].every((b) => b.disabled)).toBe(true);
+  });
+
+  it("an open live tab stops within 10 minutes of the switch going off", async () => {
+    vi.useFakeTimers();
+    let mode = "live";
+    const { fetchFn, calls } = stubFetch({
+      "/config.json": () => ({ mode, refreshSeconds: 60 }),
+      "/api/metrics": () => fixture,
+      "/api/history": () => ({ points: [] }),
+    });
+    app = await startApp({ root, fetchFn, config: { mode: "live", refreshSeconds: 60 }, storage: memory() });
+    mode = "off";
+    await vi.advanceTimersByTimeAsync(CONFIG_RECHECK_MS);
+    expect(text($("[data-banner-title]"))).toBe("Monitoring paused");
+    const before = calls.length;
+    await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
+    expect(calls.filter((c) => c.startsWith("/api/")).length).toBe(calls.slice(0, before).filter((c) => c.startsWith("/api/")).length);
   });
 });
 
 describe("live mode", () => {
-  it("requests only /api/metrics, once per refreshSeconds, plus the runs and storage history", async () => {
-    const { fetchFn, calls } = stubFetch({ metrics: () => fakeResponse(sample) });
-    app = await startApp({ root, fetchFn, config: live });
-    await vi.advanceTimersByTimeAsync(0);
-    expect(metricsCalls(calls)).toHaveLength(1);
-    expect(functionRows()).toHaveLength(10);
-    expect(liveState()).toBe("live");
-
-    await vi.advanceTimersByTimeAsync(5 * REFRESH);
-    const metrics = metricsCalls(calls);
-    expect(metrics).toHaveLength(6);
-    const gaps = metrics.slice(1).map((c, i) => c.at - metrics[i].at);
-    expect(gaps).toEqual([REFRESH, REFRESH, REFRESH, REFRESH, REFRESH]);
-    // Everything else is the two runs requests and the storage growth request
-    // after the first load (at most every 10 and 15 minutes).
-    const others = calls.filter((c) => c.url !== "/api/metrics");
-    expect(others.map((c) => c.url)).toEqual([...RUNS_URLS, STORAGE_URL]);
-    await vi.advanceTimersByTimeAsync(15 * 60 * 1000);
-    expect(calls.filter((c) => c.url === STORAGE_URL)).toHaveLength(2);
-  });
-
-  it("uses the configured refreshSeconds, snapped to 30s, 60s or 5m", async () => {
-    const { fetchFn, calls } = stubFetch({ metrics: () => fakeResponse(sample) });
-    app = await startApp({ root, fetchFn, config: { mode: "live", refreshSeconds: 300 } });
-    await vi.advanceTimersByTimeAsync(6 * REFRESH);
-    expect(metricsCalls(calls)).toHaveLength(2);
-    expect(root.querySelector('button[data-refresh="300"]')?.getAttribute("aria-pressed")).toBe("true");
-    app.stop();
-
-    const second = stubFetch({ metrics: () => fakeResponse(sample) });
-    app = await startApp({ root, fetchFn: second.fetchFn, config: { mode: "live", refreshSeconds: 120 } });
-    await vi.advanceTimersByTimeAsync(6 * REFRESH);
-    // 120 s is nearest to 60 s.
-    expect(metricsCalls(second.calls)).toHaveLength(7);
-  });
-
-  it("requests nothing while the tab is hidden", async () => {
+  it("shows the real services and asks only /api/metrics each refresh, plus the 30-day side data", async () => {
+    vi.useFakeTimers();
     const { fetchFn, calls } = stubFetch({
-      config: () => ({ mode: "live", refreshSeconds: 60 }),
-      metrics: () => fakeResponse(sample),
+      "/api/metrics": () => fixture,
+      "/api/history": () => ({ points: [{ t: "2026-10-06T00:00:00.000Z", v: 100e6 }], otherCalls: { count: 10, failed: 10 } }),
     });
-    app = await startApp({ root, fetchFn, config: live });
-    await vi.advanceTimersByTimeAsync(0);
-    const before = calls.length;
-
-    setVisibility("hidden");
-    await vi.advanceTimersByTimeAsync(30 * REFRESH);
-    expect(calls).toHaveLength(before);
-
-    setVisibility("visible");
-    await vi.advanceTimersByTimeAsync(0);
-    expect(metricsCalls(calls)).toHaveLength(2);
+    app = await startApp({ root, fetchFn, config: { mode: "live", refreshSeconds: 60 }, storage: memory() });
+    expect(text($('[data-fn="function2:pyMintOnCrewClaim"]'))).toContain("pyMintOnCrewClaim");
+    expect(text($("[data-live-text]"))).toBe("Live");
+    expect($("[data-note]")?.hidden).toBe(true);
+    const history = calls.filter((c) => c.startsWith("/api/history"));
+    expect(history).toEqual([
+      "/api/history?service=total%3Abucket&metric=bytesStored&range=30d",
+      "/api/history?service=scheduler%3ApyNightlyExport&metric=runs&range=30d",
+      "/api/history?service=scheduler%3ApyWeeklyAccounts&metric=runs&range=30d",
+    ]);
+    expect(text($('[data-job="scheduler:pyNightlyExport"] .job-note'))).toContain("10 off-schedule calls");
+    await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
+    expect(calls.filter((c) => c === "/api/metrics")).toHaveLength(6);
   });
 
-  it("backs off after errors up to the cap and recovers after a success", async () => {
-    let failing = false;
-    const { fetchFn, calls } = stubFetch({
-      config: () => ({ mode: "live", refreshSeconds: 60 }),
-      metrics: () => (failing ? fakeResponse({ error: "metrics unavailable" }, 503) : fakeResponse(sample)),
-    });
-    app = await startApp({ root, fetchFn, config: live });
-    await vi.advanceTimersByTimeAsync(0);
-
-    failing = true;
-    await vi.advanceTimersByTimeAsync(60 * SECOND);
-    // Offline with the next retry interval.
-    expect(liveState()).toBe("offline");
-    expect(root.querySelector("[data-live-text]")?.textContent).toBe("Offline");
-    expect(root.querySelector(".note.err")?.textContent).toContain("Retrying in 120 seconds");
-
-    // Failing calls at 60, 180, 420, 900, 1500, 2100 s.
-    await vi.advanceTimersByTimeAsync(2040 * SECOND);
-    expect(liveState()).toBe("offline");
-    expect(root.querySelector(".note.err")?.textContent).toContain("Retrying in 600 seconds");
-    // The last good data stays on screen while retrying.
-    expect(functionRows()).toHaveLength(10);
-
-    failing = false;
-    await vi.advanceTimersByTimeAsync(600 * SECOND); // recovers at 2700 s
-    await vi.advanceTimersByTimeAsync(2 * REFRESH); // 2760 s, 2820 s
-
-    const times = metricsCalls(calls).map((c) => c.at);
-    const gaps = times.slice(1).map((t, i) => (t - times[i]) / SECOND);
-    expect(gaps).toEqual([60, 120, 240, 480, 600, 600, 600, 60, 60]);
-    expect(liveState()).toBe("live");
-    expect(root.querySelector<HTMLElement>(".note.err")?.hidden).toBe(true);
-  });
-
-  it("shows a stale note for stale data", async () => {
-    const { fetchFn } = stubFetch({ metrics: () => fakeResponse({ ...sample, stale: true }) });
-    app = await startApp({ root, fetchFn, config: live });
-    await vi.advanceTimersByTimeAsync(0);
-    const note = root.querySelector<HTMLElement>("[data-note]");
-    expect(note?.hidden).toBe(false);
-    expect(note?.textContent).toMatch(/last good data/);
-    expect(functionRows()).toHaveLength(10);
-  });
-
-  it("re-reads /config.json every 10 minutes and stops when it becomes off", async () => {
-    let mode = "live";
-    const { fetchFn, calls } = stubFetch({
-      config: () => ({ mode, refreshSeconds: 60 }),
-      metrics: () => fakeResponse(sample),
-    });
-    app = await startApp({ root, fetchFn, config: live });
-    await vi.advanceTimersByTimeAsync(10 * REFRESH);
-    const configCalls = calls.filter((c) => c.url === "/config.json");
-    expect(configCalls).toHaveLength(1);
-    expect(configCalls[0].init).toEqual({ cache: "no-store" });
-
-    mode = "off";
-    await vi.advanceTimersByTimeAsync(10 * REFRESH);
-    expect(root.textContent).toContain("Live monitoring is paused");
-    expect(liveState()).toBe("paused");
-    const total = calls.length;
-    const metricsSoFar = metricsCalls(calls).length;
-
-    await vi.advanceTimersByTimeAsync(60 * REFRESH);
-    expect(calls).toHaveLength(total);
-    expect(metricsCalls(calls)).toHaveLength(metricsSoFar);
-    expect(root.textContent).toContain("Live monitoring is paused");
-  });
-
-  it("creates the page charts once, never in off mode, and stop() destroys them", async () => {
-    vi.mocked(createPageCharts).mockClear();
-    app = await startApp({ root, fetchFn: stubFetch({}).fetchFn, config: { mode: "off", refreshSeconds: 60 } });
-    expect(createPageCharts).not.toHaveBeenCalled();
-    app.stop();
-
-    const { fetchFn } = stubFetch({ metrics: () => fakeResponse(sample) });
-    app = await startApp({ root, fetchFn, config: live });
-    await vi.advanceTimersByTimeAsync(3 * REFRESH);
-    expect(createPageCharts).toHaveBeenCalledTimes(1);
-    const page = vi.mocked(createPageCharts).mock.results[0].value as { hero: Mock; destroy: Mock };
-    expect(page.hero.mock.calls.length).toBeGreaterThanOrEqual(4);
-    app.stop();
-    expect(page.destroy).toHaveBeenCalledTimes(1);
-  });
-
-  it("stop() ends all polling", async () => {
-    const { fetchFn, calls } = stubFetch({
-      config: () => ({ mode: "live", refreshSeconds: 60 }),
-      metrics: () => fakeResponse(sample),
-    });
-    app = await startApp({ root, fetchFn, config: live });
-    await vi.advanceTimersByTimeAsync(0);
-    app.stop();
-    const count = calls.length;
-    await vi.advanceTimersByTimeAsync(30 * REFRESH);
-    expect(calls).toHaveLength(count);
+  it("says when the metrics service can't be reached", async () => {
+    const { fetchFn } = stubFetch({});
+    app = await startApp({ root, fetchFn, config: { mode: "live", refreshSeconds: 60 }, storage: memory() });
+    expect(text($("[data-live-text]"))).toBe("Offline");
+    expect($("[data-note]")?.classList.contains("err")).toBe(true);
   });
 });

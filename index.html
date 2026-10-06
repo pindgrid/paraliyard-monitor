@@ -1,12 +1,23 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="light">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <title>Paraliyard monitor</title>
+    <meta name="color-scheme" content="light dark" />
+    <title>Paraliyard Monitor</title>
+    <script>
+      // The theme before the first paint: ?theme=, then the saved choice, else white.
+      (function () {
+        var t = new URLSearchParams(location.search).get("theme");
+        if (t !== "dark" && t !== "light") {
+          try { t = localStorage.getItem("pm-theme"); } catch (e) { t = null; }
+        }
+        document.documentElement.dataset.theme = t === "dark" ? "dark" : "light";
+      })();
+    </script>
   </head>
   <body>
-    <main id="app"></main>
+    <div id="app"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
