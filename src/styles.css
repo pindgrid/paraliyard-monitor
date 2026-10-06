@@ -134,6 +134,8 @@ table.jobs { min-width: 860px; }
 .heat i.on { background: var(--straw); }
 .heat i.err { background: var(--ember); }
 .heat i.none { background: repeating-linear-gradient(45deg, var(--surface-2) 0 2px, transparent 2px 4px); }
+/* On the shaded total row and on a hovered row, idle minutes need a darker tone to stay visible. */
+.fn tfoot .heat i.idle, .fn tbody tr:hover .heat i.idle { background: var(--rule); }
 
 /* Storage and hosting: two cards of equal height, header -> visual -> rows. */
 .pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--gap); align-items: stretch; }

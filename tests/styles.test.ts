@@ -61,6 +61,12 @@ describe("styles.css", () => {
     expect(css).toMatch(/@media \(max-width: 1023px\) \{ \.pair \{ grid-template-columns: 1fr; \} \}/);
   });
 
+  it("keeps idle activity cells visible on the shaded total row and on hovered rows", () => {
+    const tfootBg = css.match(/\.fn tfoot th, \.fn tfoot td\s*\{([^}]*)\}/)?.[1] ?? "";
+    expect(tfootBg).toMatch(/background:\s*var\(--surface-2\)/);
+    expect(css).toMatch(/\.fn tfoot \.heat i\.idle, \.fn tbody tr:hover \.heat i\.idle\s*\{\s*background:\s*var\(--rule\);\s*\}/);
+  });
+
   it("gives the Firestore numbers a 280px column that the big number always fits, one column at 900px", () => {
     const body = css.match(/\.hero-body\s*\{([^}]*)\}/)?.[1] ?? "";
     expect(body.match(/grid-template-columns:\s*([^;]+);/)?.[1]).toBe("280px minmax(0, 1fr)");
