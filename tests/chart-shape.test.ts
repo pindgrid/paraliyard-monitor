@@ -132,11 +132,12 @@ describe("bucketize", () => {
 });
 
 describe("niceAxis and ticks", () => {
-  it("0-292 gives 0, 100, 200, 300 and 0-12 gives steps of 5", () => {
+  it("0-292 gives 0, 100, 200, 300 and 0-12 gives 0, 5, 10", () => {
     expect(axisTicks(niceAxis(292, "count"))).toEqual([0, 100, 200, 300]);
     const twelve = niceAxis(12, "count");
     expect(twelve.step).toBe(5);
-    expect(axisTicks(twelve)).toEqual([0, 5, 10, 15]);
+    expect(twelve.max).toBeGreaterThanOrEqual(12);
+    expect(axisTicks(twelve)).toEqual([0, 5, 10]);
   });
 
   it("never has more than 5 ticks, reaches the data and uses round steps", () => {

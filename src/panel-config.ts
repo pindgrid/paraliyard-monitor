@@ -179,7 +179,7 @@ export function panelConfig(panel: PanelSpec, ctx: PanelContext): ChartConfigura
           grid: { color: RULE, drawTicks: false },
           border: { display: false },
           title: { display: false },
-          ticks: { color: INK_3, padding: 6, stepSize: axis.step, maxTicksLimit: 5, callback: uniqueTicks((v) => tick(v ?? 0)) },
+          ticks: { color: INK_3, padding: 6, stepSize: axis.step, maxTicksLimit: 5, includeBounds: false, callback: uniqueTicks((v) => tick(v ?? 0)) },
         },
       },
       plugins: {

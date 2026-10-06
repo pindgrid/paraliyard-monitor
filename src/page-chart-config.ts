@@ -229,7 +229,7 @@ export function hostConfig(sites: readonly ServiceMetrics[], generatedAtMs: numb
           suggestedMax: BYTE_AXIS_MIN,
           grid: { color: RULE },
           border: { display: false },
-          ticks: { callback: hostBytesTick, stepSize: axis.step, maxTicksLimit: 5 },
+          ticks: { callback: hostBytesTick, stepSize: axis.step, maxTicksLimit: 5, includeBounds: false },
         },
       },
       plugins: {

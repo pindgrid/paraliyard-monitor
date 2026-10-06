@@ -125,10 +125,12 @@ export interface NiceAxis {
 
 const clean = (v: number) => Number(v.toPrecision(12));
 
-// A 0-based y axis with round 1-2-2.5-5 x 10^n steps, at most maxCount ticks
-// and a top tick at or above the data. Counts and bytes never get fractional
-// steps; all-zero data still spans 0..1 (0..1 kB for bytes); percentages are
-// always 0..100.
+// A 0-based y axis with round 1-2-2.5-5 x 10^n steps and at most maxCount
+// ticks. The axis max is at or above the data: when the data passes the last
+// round tick by less than half a step (0-12 → 0,5,10) the axis ends at the
+// data instead of adding a tick; otherwise it rounds up (0-292 → ...,300).
+// Counts and bytes never get fractional steps; all-zero data still spans 0..1
+// (0..1 kB for bytes); percentages are always 0..100.
 export function niceAxis(dataMax: number, unit: AxisUnit, maxCount = 5): NiceAxis {
   if (unit === "pct") return { min: 0, max: 100, step: 25 };
   const floor = unit === "bytes" ? BYTE_AXIS_MIN : 1;
@@ -140,7 +142,10 @@ export function niceAxis(dataMax: number, unit: AxisUnit, maxCount = 5): NiceAxi
       const step = clean(m * magnitude);
       // A 2.5 step would print decimals below 10.
       if (step < 1 || (m === 2.5 && step < 10)) continue;
-      if (Math.ceil(clean(top / step)) <= intervals) return { min: 0, max: clean(Math.ceil(clean(top / step)) * step), step };
+      if (Math.ceil(clean(top / step)) > intervals) continue;
+      const below = Math.floor(clean(top / step));
+      if (below >= 1 && clean(top - below * step) < step / 2) return { min: 0, max: clean(top), step };
+      return { min: 0, max: clean(Math.ceil(clean(top / step)) * step), step };
     }
     magnitude *= 10;
   }
