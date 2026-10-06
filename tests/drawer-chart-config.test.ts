@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { TooltipItem } from "chart.js";
-import { bucketFor, sourceStepFor } from "../src/chart-shape";
+import { bucketFor, sourceStepFor, timeTicks, Y_AXIS_WIDTH } from "../src/chart-shape";
 import { drawerConfig, type DrawerChartSpec } from "../src/drawer-chart";
 import { groupFor } from "../src/drawer-groups";
 import { fmt, istDateTime, istTick } from "../src/fmt";
@@ -69,10 +69,10 @@ describe("drawer panels", () => {
       expect(y.max, opener).toBeGreaterThanOrEqual(1000);
       expect(y.min, opener).toBe(0);
       const ticks = Array.from({ length: Math.round(y.max! / y.ticks.stepSize!) + 1 }, (_, i) => ({ value: i * y.ticks.stepSize! }));
-      expect(ticks.length, opener).toBeLessThanOrEqual(5);
+      expect(ticks.length, opener).toBeLessThanOrEqual(6);
       const labels = ticks.map((t, i) => y.ticks.callback(t.value, i, ticks)).filter((l): l is string => l !== null);
       expect(new Set(labels).size, opener).toBe(labels.length);
-      expect(labels, opener).toEqual(["0", "250 B", "500 B", "750 B", "1 kB"]);
+      expect(labels, opener).toEqual(["0", "200 B", "400 B", "600 B", "800 B", "1 kB"]);
     }
     // 1st gen memory is drawn as RAM %, on a 0..100 axis.
     const ram = scalesOf("fn:function1:pyCleanupOnAuthDelete", 1, panelContext("fn:function1:pyCleanupOnAuthDelete", "24h", () => 0)).y;
@@ -87,7 +87,25 @@ describe("drawer panels", () => {
     const ticks = [0, 100, 200, 300, 400].map((value) => ({ value }));
     const labels = ticks.map((t, i) => y.ticks.callback(t.value, i, ticks));
     expect(labels).toEqual(["0", "100", "200", "300", "400"]);
-    expect(y.ticks.maxTicksLimit).toBe(5);
+    expect(y.ticks.maxTicksLimit).toBe(6);
+  });
+
+  it("every panel of every drawer group has the shared y width and round time ticks", () => {
+    const openers = ["fs", "fn:function2:pyMintOnCrewClaim", "fn:function1:pyCleanupOnAuthDelete", "st:bucket:mineral-proton-438104-g8-paraliyard", "host", "sum:requests", "sum:bytes"];
+    for (const opener of openers) {
+      const group = groupFor(opener)!;
+      group.panels.forEach((panel, p) => {
+        const ctx = panelContext(opener, "24h", () => 3, { timeLabels: p === group.panels.length - 1 });
+        const scales = scalesOf(opener, p, ctx) as unknown as Record<string, Scale & { afterFit: (s: { width: number }) => void; afterBuildTicks: (s: unknown) => void }>;
+        const fake = { width: 12 };
+        scales.y.afterFit(fake);
+        expect(fake.width, `${opener} ${panel.title}`).toBe(Y_AXIS_WIDTH);
+        const x = { min: scales.x.min!, max: scales.x.max!, ticks: [] as { value: number }[] };
+        scales.x.afterBuildTicks(x);
+        expect(x.ticks.map((t) => t.value), `${opener} ${panel.title}`).toEqual(timeTicks(T - 24 * HOUR, T, 4 * HOUR));
+        expect((scales.x.ticks as { display?: boolean }).display, `${opener} ${panel.title}`).toBe(p === group.panels.length - 1);
+      });
+    }
   });
 });
 

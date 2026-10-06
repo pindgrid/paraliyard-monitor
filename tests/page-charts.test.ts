@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { Y_AXIS_WIDTH } from "../src/chart-shape";
 import { createPageCharts } from "../src/page-charts";
 import { createMockSource } from "../src/source";
 import type { MetricsResponse } from "../src/types";
@@ -119,6 +120,21 @@ describe("createPageCharts", () => {
     expect(host.data.labels).toHaveLength(30);
     expect(host.data.labels![29]).toBe("10:37 pm");
     expect(host.data.datasets[0].data).toEqual(sites(second)[0].recent!.series.bytesServed);
+
+    // After the refresh: the shared y width, bottom-only hero time labels,
+    // the round tick hooks and a round y max.
+    type Scale = { max: number; afterFit: (s: { width: number }) => void; afterBuildTicks?: unknown; ticks: { display?: boolean; stepSize: number } };
+    const scalesOf = (c: (typeof FakeChart.created)[number]) => c.options.scales as unknown as Record<string, Scale>;
+    expect(scalesOf(reads).x.ticks.display).toBe(false);
+    expect(scalesOf(writes).x.ticks.display).toBe(true);
+    for (const chart of [reads, writes, host]) {
+      const { x, y } = scalesOf(chart);
+      const fake = { width: 0 };
+      y.afterFit(fake);
+      expect(fake.width).toBe(Y_AXIS_WIDTH);
+      expect(typeof x.afterBuildTicks).toBe("function");
+      expect(Number.isInteger(Number((y.max / y.ticks.stepSize).toFixed(9)))).toBe(true);
+    }
   });
 
   it("draws only the reads panel when the writes canvas is missing", () => {

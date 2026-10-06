@@ -14,13 +14,17 @@ import {
   bytesTick,
   countTick,
   firstDataAt,
+  fitYAxis,
   niceAxis,
   noDataBand,
   pctTick,
   sourceStepFor,
+  timeTicks,
+  timeTickStep,
+  Y_AXIS_WIDTH,
   type XYPoint,
 } from "../src/chart-shape";
-import { istDay } from "../src/fmt";
+import { istDay, istTick } from "../src/fmt";
 import type { HistoryRange } from "../src/types";
 
 const MIN = 60000;
@@ -132,32 +136,62 @@ describe("bucketize", () => {
 });
 
 describe("niceAxis and ticks", () => {
-  it("0-292 gives 0, 100, 200, 300 and 0-12 gives 0, 5, 10", () => {
+  it("0-292 gives 0, 100, 200, 300 and 0-12 gives 0, 5, 10, 15", () => {
     expect(axisTicks(niceAxis(292, "count"))).toEqual([0, 100, 200, 300]);
     const twelve = niceAxis(12, "count");
     expect(twelve.step).toBe(5);
     expect(twelve.max).toBeGreaterThanOrEqual(12);
-    expect(axisTicks(twelve)).toEqual([0, 5, 10]);
+    expect(axisTicks(twelve)).toEqual([0, 5, 10, 15]);
   });
 
-  it("never has more than 5 ticks, reaches the data and uses round steps", () => {
+  it("43.4 MB gives 0..50 MB in 10 MB steps", () => {
+    const axis = niceAxis(43.4e6, "bytes");
+    expect(axis).toEqual({ min: 0, max: 5e7, step: 1e7 });
+    const ticks = axisTicks(axis);
+    expect(ticks).toEqual([0, 1e7, 2e7, 3e7, 4e7, 5e7]);
+    expect(ticks.map(bytesTick)).toEqual(["0", "10 MB", "20 MB", "30 MB", "40 MB", "50 MB"]);
+  });
+
+  it("never has more than 6 ticks, ends on a round tick at or above the data and uses 1-2-5 steps", () => {
     for (const unit of ["count", "bytes"] as const) {
-      for (const max of [0, 0.4, 1, 3, 7, 12, 37.39, 99, 101, 292, 499.6, 1234, 98765, 4.3e7, 2.1e9]) {
+      for (const max of [0, 0.4, 1, 3, 7, 12, 37.39, 99, 101, 292, 499.6, 1234, 98765, 4.3e7, 43.4e6, 2.1e9]) {
         const axis = niceAxis(max, unit);
         const ticks = axisTicks(axis);
-        expect(ticks.length, `${unit} ${max}`).toBeLessThanOrEqual(5);
+        expect(ticks.length, `${unit} ${max}`).toBeLessThanOrEqual(6);
         expect(axis.max, `${unit} ${max}`).toBeGreaterThanOrEqual(max);
         expect(Number.isInteger(axis.step), `${unit} ${max}`).toBe(true);
+        expect(Number.isInteger(Number((axis.max / axis.step).toFixed(9))), `${unit} ${max}`).toBe(true);
+        expect(ticks[ticks.length - 1], `${unit} ${max}`).toBe(axis.max);
         const mantissa = axis.step / 10 ** Math.floor(Math.log10(axis.step));
-        expect([1, 2, 2.5, 5], `${unit} ${max}`).toContain(Number(mantissa.toFixed(6)));
+        expect([1, 2, 5], `${unit} ${max}`).toContain(Number(mantissa.toFixed(6)));
       }
     }
     expect(axisTicks(niceAxis(37, "pct"))).toEqual([0, 25, 50, 75, 100]);
+    expect(niceAxis(0, "pct")).toEqual({ min: 0, max: 100, step: 25 });
   });
 
   it("all-zero data keeps an axis: 0..1 for counts, 0..1 kB for bytes", () => {
     expect(niceAxis(0, "count").max).toBe(1);
     expect(niceAxis(0, "bytes").max).toBe(1000);
+  });
+
+  it("every y label fits the shared y-axis width", () => {
+    const sweep = [0, 0.4, 1, 3, 7, 12, 37.39, 99, 292, 1234, 9999, 45678, 98765, 3.2e5, 7.7e5, 1e6];
+    const labels: string[] = [];
+    for (const max of sweep) labels.push(...axisTicks(niceAxis(max, "count")).map(countTick));
+    for (const max of [...sweep, 4.3e7, 43.4e6, 2.1e8, 9.9e8, 2.1e9, 9.4e9]) labels.push(...axisTicks(niceAxis(max, "bytes")).map(bytesTick));
+    labels.push(...axisTicks(niceAxis(50, "pct")).map(pctTick));
+    expect(labels).toContain("10,00,000");
+    for (const label of labels) {
+      expect(label.length, label).toBeLessThanOrEqual(9);
+      expect(label.length * 6.6 + 6, label).toBeLessThanOrEqual(Y_AXIS_WIDTH);
+    }
+  });
+
+  it("fitYAxis sets the shared width on a scale", () => {
+    const scale = { width: 31 };
+    fitYAxis(scale);
+    expect(scale.width).toBe(Y_AXIS_WIDTH);
   });
 
   it("formats counts without needless decimals, bytes with units and percentages with a space", () => {
@@ -175,6 +209,54 @@ describe("niceAxis and ticks", () => {
       expect(new Set(labels).size, unit).toBe(labels.length);
       expect(labels.some((l) => l.includes(".00")), unit).toBe(false);
     }
+  });
+});
+
+describe("time ticks", () => {
+  const IST = 330 * MIN;
+  const WINDOWS: [string, number, number, number][] = [
+    ["30 min", 30 * MIN, 5 * MIN, 6],
+    ["1h", HOUR, 10 * MIN, 6],
+    ["6h", 6 * HOUR, HOUR, 6],
+    ["24h", DAY, 4 * HOUR, 6],
+    ["7d", 7 * DAY, DAY, 7],
+    ["30d", 30 * DAY, 5 * DAY, 6],
+    ["6w", 42 * DAY, 7 * DAY, 6],
+  ];
+
+  it("gives 5-7 round, evenly spaced IST ticks per window", () => {
+    // Window ends on and off round times.
+    for (const to of [T, T + 7 * MIN, T + 23 * MIN + 17000, Date.UTC(2026, 9, 4, 21, 5, 47)]) {
+      for (const [name, range, step, count] of WINDOWS) {
+        expect(timeTickStep(range), name).toBe(step);
+        const ticks = timeTicks(to - range, to, step);
+        expect(ticks.length, name).toBeGreaterThanOrEqual(5);
+        expect(ticks.length, name).toBeLessThanOrEqual(7);
+        expect(ticks.length, name).toBe(count);
+        for (let i = 0; i < ticks.length; i += 1) {
+          expect((ticks[i] + IST) % step, name).toBe(0);
+          expect(ticks[i], name).toBeGreaterThanOrEqual(to - range);
+          expect(ticks[i], name).toBeLessThan(to);
+          if (i > 0) expect(ticks[i] - ticks[i - 1], name).toBe(step);
+        }
+      }
+    }
+  });
+
+  it("24h: 4 hours apart on IST 4-hour boundaries with unique labels", () => {
+    // 5 Oct 2026, 11:22 am IST.
+    const to = Date.UTC(2026, 9, 5, 5, 52);
+    const ticks = timeTicks(to - DAY, to, timeTickStep(DAY));
+    expect(ticks.map((t) => istTick(t, DAY))).toEqual(["12:00 pm", "4:00 pm", "8:00 pm", "12:00 am", "4:00 am", "8:00 am"]);
+    const labels = ticks.map((t) => istTick(t, DAY));
+    expect(new Set(labels).size).toBe(labels.length);
+  });
+
+  it("30 min: every 5 minutes", () => {
+    // 10:36 pm IST.
+    const to = Date.UTC(2026, 9, 5, 17, 6);
+    const ticks = timeTicks(to - 30 * MIN, to, timeTickStep(30 * MIN));
+    expect(ticks.map((t) => istTick(t, 30 * MIN))).toEqual(["10:10 pm", "10:15 pm", "10:20 pm", "10:25 pm", "10:30 pm", "10:35 pm"]);
   });
 });
 

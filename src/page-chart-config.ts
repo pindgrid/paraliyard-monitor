@@ -3,7 +3,7 @@
 // call the builders and named callbacks directly. Values follow the design
 // reference (themeDefaults, tooltipStyle, makeHero, makeHost, updateHost).
 import type { ChartConfiguration, TooltipItem } from "chart.js";
-import { bytesTick as axisBytesTick, LIVE_BUCKET_MS, LIVE_BUCKETS, niceAxis, type NiceAxis } from "./chart-shape";
+import { bytesTick as axisBytesTick, fitYAxis, LIVE_BUCKET_MS, LIVE_BUCKETS, niceAxis, type NiceAxis } from "./chart-shape";
 import type { PanelSpec } from "./drawer-groups";
 import { BYTE_AXIS_MIN, fmt, istTick, istShortTime, istTime, uniqueTicks } from "./fmt";
 import { panelConfig, panelData, type PanelSeries, type PanelWindow } from "./panel-config";
@@ -101,7 +101,9 @@ export function hostLabel(item: TooltipItem<"bar">): string {
 
 // ---------- Hero (Firestore, last 30 minutes) ----------
 
-// Reads on top (about 70 % of the height), writes and deletes below.
+// Reads on top, writes and deletes below. Panel heights come from
+// src/styles.css (.hero-panel--reads, .hero-panel--writes); heightWeight is
+// kept as data only.
 export const HERO_PANELS: readonly PanelSpec[] = [
   { title: "Reads per minute", kind: "bar", unit: "count", heightWeight: 0.7, datasets: [{ series: 0, label: "Reads", color: "--straw" }] },
   {
@@ -157,14 +159,15 @@ export interface HeroPanelConfig {
   config: ChartConfiguration;
 }
 
-// Two stacked bar panels with one y axis each.
+// Two stacked bar panels with one y axis each; only the bottom one labels
+// the times.
 export function heroConfig(fs: ServiceMetrics | undefined, generatedAtMs: number): { panels: HeroPanelConfig[] } {
   const raw = heroPointsOf(fs, generatedAtMs);
   const win = heroWindow(fs, generatedAtMs);
   return {
-    panels: HERO_PANELS.map((panel) => ({
+    panels: HERO_PANELS.map((panel, i) => ({
       weight: panel.heightWeight,
-      config: panelConfig(panel, { ...win, raw, visible: [], band: null, formatTick: heroTick }),
+      config: panelConfig(panel, { ...win, raw, visible: [], band: null, formatTick: heroTick, timeLabels: i === HERO_PANELS.length - 1 }),
     })),
   };
 }
@@ -190,6 +193,14 @@ export function hostData(sites: readonly ServiceMetrics[], generatedAtMs: number
     });
   });
   return { labels, datasets };
+}
+
+// Chart.js afterBuildTicks hook of the hosting category axis: keeps the ticks
+// whose label ("10:05 pm") is on a 5-minute mark. IST is UTC+5:30, so these
+// are round IST times: 6 of the 30 minutes.
+export function roundMinuteTicks(scale: { ticks: { value: number }[]; chart: { data: { labels?: unknown[] } } }): void {
+  const labels = scale.chart.data.labels ?? [];
+  scale.ticks = scale.ticks.filter((t) => Number(/:(\d+)/.exec(String(labels[t.value] ?? ""))?.[1]) % 5 === 0);
 }
 
 // The y axis of the stacked hosting bars: round byte steps, at least 0..1 kB.
@@ -220,16 +231,22 @@ export function hostConfig(sites: readonly ServiceMetrics[], generatedAtMs: numb
       maintainAspectRatio: false,
       animation: false,
       scales: {
-        x: { stacked: true, grid: { display: false }, ticks: { maxTicksLimit: 6, autoSkip: true, maxRotation: 0 } },
+        x: {
+          stacked: true,
+          grid: { display: true, color: RULE, drawTicks: false },
+          afterBuildTicks: roundMinuteTicks,
+          ticks: { autoSkip: false, maxRotation: 0 },
+        },
         y: {
           stacked: true,
           beginAtZero: true,
           min: 0,
           max: axis.max,
           suggestedMax: BYTE_AXIS_MIN,
+          afterFit: fitYAxis,
           grid: { color: RULE },
           border: { display: false },
-          ticks: { callback: hostBytesTick, stepSize: axis.step, maxTicksLimit: 5, includeBounds: false },
+          ticks: { callback: hostBytesTick, stepSize: axis.step, maxTicksLimit: 6, includeBounds: false },
         },
       },
       plugins: {

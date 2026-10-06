@@ -1,5 +1,8 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { groupFor } from "../src/drawer-groups";
+import { panelConfig } from "../src/panel-config";
+import { CHROME_LEGEND_PX, CHROME_TIME_LABELS_PX, CHROME_TOP_PX } from "../src/panel-layout";
 
 // Paths are relative to the project root, where vitest runs.
 const css = readFileSync("src/styles.css", "utf8");
@@ -83,6 +86,57 @@ describe("styles.css", () => {
     expect(css).toMatch(/--font:\s*"Archivo Variable", "Archivo", "Helvetica Neue", Arial, sans-serif;/);
     expect(css).not.toMatch(/https?:\/\//);
     expect(css).not.toMatch(/@import/);
+  });
+});
+
+describe("chart panel heights", () => {
+  // The height of the rule with exactly this selector.
+  const heightOf = (selector: string): number => {
+    const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const body = css.match(new RegExp(`(?:^|\\n|\\})\\s*${escaped}\\s*\\{([^}]*)\\}`))?.[1] ?? "";
+    const px = body.match(/(?:^|;)\s*height:\s*(\d+)px/)?.[1];
+    expect(px, selector).toBeDefined();
+    return Number(px);
+  };
+  const plot = (selector: string, legend: boolean, timeLabels: boolean) =>
+    heightOf(selector) - CHROME_TOP_PX - (legend ? CHROME_LEGEND_PX : 0) - (timeLabels ? CHROME_TIME_LABELS_PX : 0);
+
+  it("hero: reads plot about 190px, writes and deletes plot at least 80px and 25-35 % of the two", () => {
+    const reads = plot(".hero-panel--reads", false, false);
+    const writes = plot(".hero-panel--writes", true, true);
+    expect(reads).toBeGreaterThanOrEqual(180);
+    expect(reads).toBeLessThanOrEqual(200);
+    expect(writes).toBeGreaterThanOrEqual(80);
+    expect(writes / (reads + writes)).toBeGreaterThanOrEqual(0.25);
+    expect(writes / (reads + writes)).toBeLessThanOrEqual(0.35);
+  });
+
+  it("drawer: every panel variant has a plot of at least 110px", () => {
+    expect(plot(".dpanel", false, false)).toBeGreaterThanOrEqual(110);
+    expect(plot(".dpanel--legend", true, false)).toBeGreaterThanOrEqual(110);
+    expect(plot(".dpanel--last", false, true)).toBeGreaterThanOrEqual(110);
+    expect(plot(".dpanel--legend.dpanel--last", true, true)).toBeGreaterThanOrEqual(110);
+  });
+
+  it("panels never share leftover space with flex-grow; the containers size to them", () => {
+    const rules = [...css.matchAll(/([^{}]+)\{([^}]*)\}/g)].filter(([, selector]) => /hero-panel|dpanel/.test(selector));
+    expect(rules.length).toBeGreaterThan(0);
+    for (const [, selector, body] of rules) expect(body, selector.trim()).not.toMatch(/(?:^|;)\s*flex:\s*\d/);
+    expect(css).toMatch(/\.hero-chart:has\(\.hero-panel\)\s*\{[^}]*height:\s*auto/);
+    expect(css).toMatch(/\.dchart\.dpanels\s*\{[^}]*height:\s*auto/);
+  });
+
+  it("the top chrome matches the panel config's top padding", () => {
+    const panel = groupFor("fs")!.panels[0];
+    const cfg = panelConfig(panel, { from: 0, to: 3600000, bucketMs: 60000, sourceStepMs: 60000, raw: [], visible: [], band: null, formatTick: String });
+    expect(CHROME_TOP_PX).toBe(18);
+    expect((cfg.options as { layout: { padding: { top: number } } }).layout.padding.top).toBe(CHROME_TOP_PX);
+  });
+
+  it("the hero markup has the reads and writes panel classes", () => {
+    const dashboard = readFileSync("src/dashboard.ts", "utf8");
+    expect(dashboard).toContain('class="hero-panel hero-panel--reads"');
+    expect(dashboard).toContain('class="hero-panel hero-panel--writes"');
   });
 });
 

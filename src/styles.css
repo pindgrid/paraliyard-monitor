@@ -174,12 +174,19 @@ table.dstats { width: 100%; border-collapse: collapse; font-size: 13px; }
 .dstats tr.muted td { color: var(--ink-3); }
 .dfoot { font-size: 12px; color: var(--ink-3); }
 
-/* Chart panels: hero reads (7) over writes + deletes (3); drawer panels by weight */
-.hero-chart:has(.hero-panel) { display: flex; flex-direction: column; gap: 4px; }
-.hero-panel { position: relative; flex: 7 1 0; min-height: 0; }
-.hero-panel + .hero-panel { flex: 3 1 0; }
-.dchart.dpanels { display: flex; flex-direction: column; gap: 6px; }
-.dpanel { position: relative; min-height: 0; }
+/* Chart panels: each height is plot + fixed chrome (src/panel-layout.ts):
+   18px top padding, 32px legend with more than one series, 24px time labels
+   on the bottom panel of a stack. Hero: reads plot 190px over writes +
+   deletes plot 82px; drawer panels: 110px plots. No flex sharing. */
+.hero-chart:has(.hero-panel) { height: auto; display: flex; flex-direction: column; gap: 4px; }
+.hero-panel { position: relative; flex: none; min-height: 0; }
+.hero-panel--reads { height: 208px; }
+.hero-panel--writes { height: 156px; }
+.dchart.dpanels { height: auto; display: flex; flex-direction: column; gap: 6px; }
+.dpanel { position: relative; flex: none; min-height: 0; height: 128px; }
+.dpanel--legend { height: 160px; }
+.dpanel--last { height: 152px; }
+.dpanel--legend.dpanel--last { height: 184px; }
 .dtip {
   position: absolute; top: 4px; left: 0; z-index: 2; pointer-events: none; min-width: 150px;
   background: var(--ink); color: var(--surface); border-radius: 6px; padding: 8px 10px; font-size: 12px; line-height: 1.45; white-space: nowrap;

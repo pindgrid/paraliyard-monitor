@@ -135,9 +135,6 @@ export function drawerConfig(spec: DrawerChartSpec): ChartConfiguration {
 
 const NOOP: DrawerChart = { setVisible() {}, setData() {}, destroy() {} };
 
-// Pixels per unit of PanelSpec.heightWeight.
-const PANEL_HEIGHT_PX = 150;
-
 function createRunsChart(canvas: HTMLCanvasElement, spec: DrawerChartSpec): DrawerChart {
   const chart = new Chart(canvas, drawerConfig(spec));
   return {
@@ -158,7 +155,8 @@ function createRunsChart(canvas: HTMLCanvasElement, spec: DrawerChartSpec): Draw
 }
 
 // One chart per panel: panel 0 on the given canvas, the others on new
-// canvases; each sits in a .dpanel wrapper sized by its heightWeight.
+// canvases; each sits in a .dpanel wrapper sized by its CSS classes
+// (.dpanel--legend with more than one series, .dpanel--last at the bottom).
 function createPanelCharts(canvas: HTMLCanvasElement, spec: DrawerChartSpec, panels: PanelSpec[], pc: DrawerPanelContext): DrawerChart {
   const doc = canvas.ownerDocument;
   const container = (canvas.closest(".dchart") as HTMLElement | null) ?? canvas.parentElement;
@@ -182,8 +180,9 @@ function createPanelCharts(canvas: HTMLCanvasElement, spec: DrawerChartSpec, pan
       ),
   });
 
-  function context(): PanelContext {
-    return { ...win, raw, visible, band, formatTick, onToggle: (i) => toggle(i, !visible[i]) };
+  // Only the bottom panel labels the times.
+  function context(p: number): PanelContext {
+    return { ...win, raw, visible, band, formatTick, onToggle: (i) => toggle(i, !visible[i]), timeLabels: p === panels.length - 1 };
   }
 
   const wrappers: HTMLElement[] = [];
@@ -191,11 +190,11 @@ function createPanelCharts(canvas: HTMLCanvasElement, spec: DrawerChartSpec, pan
   const charts: Chart[] = [];
   const height = container.style.height;
   container.classList.add("dpanels");
-  container.style.height = `${Math.round(PANEL_HEIGHT_PX * panels.reduce((a, p) => a + p.heightWeight, 0))}px`;
   panels.forEach((panel, i) => {
     const wrapper = doc.createElement("div");
-    wrapper.className = "dpanel";
-    wrapper.style.flex = `${panel.heightWeight} 1 0`;
+    wrapper.classList.add("dpanel");
+    if (panel.datasets.length > 1) wrapper.classList.add("dpanel--legend");
+    if (i === panels.length - 1) wrapper.classList.add("dpanel--last");
     let target = canvas;
     if (i > 0) {
       target = doc.createElement("canvas");
@@ -206,16 +205,16 @@ function createPanelCharts(canvas: HTMLCanvasElement, spec: DrawerChartSpec, pan
     wrapper.append(target);
     container.insertBefore(wrapper, anchor);
     wrappers.push(wrapper);
-    const config = panelConfig(panel, context());
+    const config = panelConfig(panel, context(i));
     config.plugins = [sync.plugin as unknown as Plugin, overlayPlugin as unknown as Plugin];
     charts.push(new Chart(target, config));
   });
 
-  // Re-bucket every panel from raw, then redraw without animation.
+  // Re-bucket every panel from raw, then redraw without animation. The round
+  // time ticks, bottom-only labels and shared y width are re-applied too.
   function refresh() {
-    const ctx = context();
     charts.forEach((chart, p) => {
-      const next = panelConfig(panels[p], ctx);
+      const next = panelConfig(panels[p], context(p));
       chart.data.datasets.forEach((dataset, k) => {
         const fresh = next.data.datasets[k];
         if (!fresh) return;
@@ -224,9 +223,13 @@ function createPanelCharts(canvas: HTMLCanvasElement, spec: DrawerChartSpec, pan
       });
       const scales = chart.options.scales as Record<string, Record<string, unknown>> | undefined;
       const nextScales = next.options?.scales as Record<string, Record<string, unknown>> | undefined;
-      if (scales?.x && nextScales?.x) Object.assign(scales.x, { min: nextScales.x.min, max: nextScales.x.max });
+      if (scales?.x && nextScales?.x) {
+        Object.assign(scales.x, { min: nextScales.x.min, max: nextScales.x.max, afterBuildTicks: nextScales.x.afterBuildTicks });
+        Object.assign(scales.x.ticks as object, { display: (nextScales.x.ticks as { display?: boolean }).display });
+      }
       if (scales?.y && nextScales?.y) {
         scales.y.max = nextScales.y.max;
+        scales.y.afterFit = nextScales.y.afterFit;
         Object.assign(scales.y.ticks as object, { stepSize: (nextScales.y.ticks as { stepSize: number }).stepSize });
       }
       const plugins = chart.options.plugins as Record<string, unknown> | undefined;

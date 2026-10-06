@@ -125,30 +125,55 @@ export interface NiceAxis {
 
 const clean = (v: number) => Number(v.toPrecision(12));
 
-// A 0-based y axis with round 1-2-2.5-5 x 10^n steps and at most maxCount
-// ticks. The axis max is at or above the data: when the data passes the last
-// round tick by less than half a step (0-12 → 0,5,10) the axis ends at the
-// data instead of adding a tick; otherwise it rounds up (0-292 → ...,300).
+// A 0-based y axis with round 1-2-5 x 10^n steps and at most maxCount ticks.
+// The axis max is always the first round tick at or above the data
+// (0-12 → 0,5,10,15; 0-292 → ...,300; 43.4 MB → 0..50 MB by 10 MB).
 // Counts and bytes never get fractional steps; all-zero data still spans 0..1
 // (0..1 kB for bytes); percentages are always 0..100.
-export function niceAxis(dataMax: number, unit: AxisUnit, maxCount = 5): NiceAxis {
+export function niceAxis(dataMax: number, unit: AxisUnit, maxCount = 6): NiceAxis {
   if (unit === "pct") return { min: 0, max: 100, step: 25 };
   const floor = unit === "bytes" ? BYTE_AXIS_MIN : 1;
   const top = Math.max(Number.isFinite(dataMax) ? dataMax : 0, floor);
   const intervals = Math.max(1, maxCount - 1);
   let magnitude = 10 ** Math.floor(Math.log10(top / intervals));
   for (;;) {
-    for (const m of [1, 2, 2.5, 5]) {
+    for (const m of [1, 2, 5]) {
       const step = clean(m * magnitude);
-      // A 2.5 step would print decimals below 10.
-      if (step < 1 || (m === 2.5 && step < 10)) continue;
-      if (Math.ceil(clean(top / step)) > intervals) continue;
-      const below = Math.floor(clean(top / step));
-      if (below >= 1 && clean(top - below * step) < step / 2) return { min: 0, max: clean(top), step };
-      return { min: 0, max: clean(Math.ceil(clean(top / step)) * step), step };
+      if (step < 1) continue;
+      const count = Math.ceil(clean(top / step));
+      if (count > intervals) continue;
+      return { min: 0, max: clean(count * step), step };
     }
     magnitude *= 10;
   }
+}
+
+// Every chart's y axis is this wide (px), so stacked panels line up. Labels
+// stay within 9 characters ("10,00,000"): 9 x 6.6 px + 6 px padding fits.
+export const Y_AXIS_WIDTH = 68;
+
+// Chart.js afterFit hook of a y scale: the shared width.
+export function fitYAxis(scale: { width: number }): void {
+  scale.width = Y_AXIS_WIDTH;
+}
+
+// Round time-tick spacing for a window: 5-7 ticks per window.
+export function timeTickStep(rangeMs: number): number {
+  if (rangeMs <= 30 * MINUTE_MS) return 5 * MINUTE_MS;
+  if (rangeMs <= HOUR_MS) return 10 * MINUTE_MS;
+  if (rangeMs <= 6 * HOUR_MS) return HOUR_MS;
+  if (rangeMs <= DAY_MS) return 4 * HOUR_MS;
+  if (rangeMs <= 7 * DAY_MS) return DAY_MS;
+  if (rangeMs <= 30 * DAY_MS) return 5 * DAY_MS;
+  return 7 * DAY_MS;
+}
+
+// Ticks on IST step boundaries over [from, to).
+export function timeTicks(from: number, to: number, stepMs: number): number[] {
+  const ticks: number[] = [];
+  if (!Number.isFinite(from) || !Number.isFinite(to) || !(stepMs > 0)) return ticks;
+  for (let t = Math.ceil((from + IST_OFFSET_MS) / stepMs) * stepMs - IST_OFFSET_MS; t < to; t += stepMs) ticks.push(t);
+  return ticks;
 }
 
 // The ticks of a nice axis.

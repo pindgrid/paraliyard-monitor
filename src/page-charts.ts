@@ -19,7 +19,8 @@ import {
   type Plugin,
 } from "chart.js";
 import { crosshairSync, overlayPlugin, type CrosshairSync } from "./chart-plugins";
-import { applyTheme, heroConfig, heroData, heroWindow, HERO_PANELS, hostAxis, hostConfig, hostData } from "./page-chart-config";
+import { fitYAxis } from "./chart-shape";
+import { applyTheme, heroConfig, heroData, heroWindow, HERO_PANELS, hostAxis, hostConfig, hostData, roundMinuteTicks } from "./page-chart-config";
 import { bucketTooltip } from "./panel-config";
 import type { ServiceMetrics } from "./types";
 
@@ -54,7 +55,8 @@ function writesCanvasOf(canvas: HTMLCanvasElement): HTMLCanvasElement | null {
 
 type Scales = Record<string, Record<string, unknown>>;
 
-// Copies the data, x range, y axis and overlay options of next into chart.
+// Copies the data, x range and ticks, y axis and overlay options of next into
+// chart, so the round time ticks, bottom-only labels and shared y width stay.
 function swap(chart: Chart, next: ChartConfiguration) {
   chart.data.datasets.forEach((dataset, i) => {
     const fresh = next.data.datasets[i];
@@ -65,9 +67,12 @@ function swap(chart: Chart, next: ChartConfiguration) {
   if (scales?.x && nextScales?.x) {
     scales.x.min = nextScales.x.min;
     scales.x.max = nextScales.x.max;
+    scales.x.afterBuildTicks = nextScales.x.afterBuildTicks;
+    Object.assign(scales.x.ticks as object, { display: (nextScales.x.ticks as { display?: boolean }).display });
   }
   if (scales?.y && nextScales?.y) {
     scales.y.max = nextScales.y.max;
+    scales.y.afterFit = nextScales.y.afterFit;
     Object.assign(scales.y.ticks as object, { stepSize: (nextScales.y.ticks as { stepSize?: number }).stepSize });
   }
   const plugins = chart.options.plugins as Record<string, unknown> | undefined;
@@ -138,11 +143,13 @@ export function createPageCharts(): PageCharts {
       } else {
         hostChart.data.datasets = hostConfig(sites, generatedAtMs).data.datasets;
       }
-      const y = (hostChart.options.scales as Scales | undefined)?.y;
-      if (y) {
+      const scales = hostChart.options.scales as Scales | undefined;
+      if (scales?.x) scales.x.afterBuildTicks = roundMinuteTicks;
+      if (scales?.y) {
         const axis = hostAxis(data);
-        y.max = axis.max;
-        Object.assign(y.ticks as object, { stepSize: axis.step });
+        scales.y.max = axis.max;
+        scales.y.afterFit = fitYAxis;
+        Object.assign(scales.y.ticks as object, { stepSize: axis.step });
       }
       hostChart.update("none");
     },

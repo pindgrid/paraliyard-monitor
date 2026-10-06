@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { GEN1_MEMORY_BYTES, type XYPoint } from "../src/chart-shape";
+import { GEN1_MEMORY_BYTES, timeTicks, Y_AXIS_WIDTH, type XYPoint } from "../src/chart-shape";
 import { groupFor, type PanelSpec } from "../src/drawer-groups";
 import { istTick } from "../src/fmt";
+import { RULE } from "../src/page-chart-config";
 import { bucketTooltip, NO_ACTIVITY, panelConfig, panelData, type PanelContext } from "../src/panel-config";
 
 const MIN = 60000;
@@ -139,6 +140,38 @@ describe("axes, legend and states", () => {
     expect(options.scales.x.min).toBe(T - 24 * HOUR);
     expect(options.scales.x.max).toBe(T);
     expect(options.scales.x.ticks.callback(T, 0, [])).toBe("2:00 pm");
+  });
+
+  it("y: shared width and at most 6 ticks; x: round IST ticks with vertical gridlines", () => {
+    const { options } = build(groupFor("fs")!.panels[0], context(3, (i) => (i === 10 ? 292 : 12)));
+    const y = options.scales.y as unknown as { afterFit: (s: { width: number }) => void; ticks: { maxTicksLimit: number } };
+    const fake = { width: 40 };
+    y.afterFit(fake);
+    expect(fake.width).toBe(Y_AXIS_WIDTH);
+    expect(y.ticks.maxTicksLimit).toBe(6);
+    const x = options.scales.x as unknown as { grid: { display: boolean; color: string }; ticks: { autoSkip: boolean; maxTicksLimit?: number } };
+    expect(x.grid).toMatchObject({ display: true, color: RULE });
+    expect(x.ticks.autoSkip).toBe(false);
+    expect(x.ticks.maxTicksLimit).toBeUndefined();
+  });
+
+  it("timeLabels: false hides the x labels but keeps the range, ticks and gridlines", () => {
+    type X = { min: number; max: number; grid: { display: boolean }; afterBuildTicks: (s: unknown) => void; ticks: { display: boolean } };
+    const panel = groupFor("fs")!.panels[0];
+    const shown = build(panel, context(3)).options.scales.x as unknown as X;
+    const hidden = build(panel, context(3, () => 1, { timeLabels: false })).options.scales.x as unknown as X;
+    expect(shown.ticks.display).toBe(true);
+    expect(hidden.ticks.display).toBe(false);
+    expect([hidden.min, hidden.max]).toEqual([shown.min, shown.max]);
+    expect(hidden.grid.display).toBe(true);
+    const ticksOf = (x: X) => {
+      const scale = { min: x.min, max: x.max, ticks: [] as { value: number }[] };
+      x.afterBuildTicks(scale);
+      return scale.ticks.map((t) => t.value);
+    };
+    expect(ticksOf(hidden)).toEqual(ticksOf(shown));
+    expect(ticksOf(shown)).toEqual(timeTicks(T - 24 * HOUR, T, 4 * HOUR));
+    expect(ticksOf(shown)).toHaveLength(6);
   });
 
   it("shows the legend only with more than one series, without the peak twins", () => {

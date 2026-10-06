@@ -8,10 +8,13 @@ import {
   bucketSpan,
   bytesTick,
   countTick,
+  fitYAxis,
   GEN1_MEMORY_BYTES,
   niceAxis,
   pctTick,
   tickFor,
+  timeTicks,
+  timeTickStep,
   type Bucket,
   type NiceAxis,
   type NoDataBand,
@@ -20,6 +23,7 @@ import {
 import { COLORS, type PanelDataset, type PanelSpec } from "./drawer-groups";
 import { uniqueTicks } from "./fmt";
 import { alpha, INK_2, INK_3, RULE } from "./page-chart-config";
+import { CHROME_TOP_PX } from "./panel-layout";
 
 export interface PanelWindow {
   from: number;
@@ -37,6 +41,9 @@ export interface PanelContext extends PanelWindow {
   formatTick: (ms: number) => string;
   // A legend click on a series; without it Chart.js toggles the dataset.
   onToggle?: (seriesIndex: number) => void;
+  // False above the bottom panel of a stack: x labels hidden (ticks and
+  // gridlines stay). Missing means shown.
+  timeLabels?: boolean;
 }
 
 // One drawn series of a panel, bucketed.
@@ -145,6 +152,12 @@ function legendClick(onToggle: (seriesIndex: number) => void) {
   };
 }
 
+// Chart.js afterBuildTicks hook of a time x scale: round IST ticks over the
+// scale's live min/max, so a refreshed range needs no extra copying.
+export function roundTimeTicks(scale: { min: number; max: number; ticks: { value: number }[] }): void {
+  scale.ticks = timeTicks(scale.min, scale.max, timeTickStep(scale.max - scale.min)).map((value) => ({ value }));
+}
+
 export function panelConfig(panel: PanelSpec, ctx: PanelContext): ChartConfiguration {
   const data = panelData(panel, ctx.raw, ctx);
   const axis = panelAxis(panel, data, ctx.visible, ctx);
@@ -158,28 +171,38 @@ export function panelConfig(panel: PanelSpec, ctx: PanelContext): ChartConfigura
       responsive: true,
       maintainAspectRatio: false,
       animation: false,
-      layout: { padding: { top: 18 } },
+      layout: { padding: { top: CHROME_TOP_PX } },
       interaction: { mode: "index", intersect: false },
       scales: {
+        // Round IST time ticks with vertical gridlines on every panel; only
+        // the bottom panel of a stack labels them.
         x: {
           type: "linear",
           min: ctx.from,
           max: ctx.to,
           stacked,
           offset: false,
-          grid: { display: false },
-          ticks: { color: INK_3, maxTicksLimit: 6, maxRotation: 0, callback: (v: number | string) => ctx.formatTick(Number(v)) },
+          grid: { display: true, color: RULE, drawTicks: false },
+          afterBuildTicks: roundTimeTicks,
+          ticks: {
+            display: ctx.timeLabels !== false,
+            autoSkip: false,
+            color: INK_3,
+            maxRotation: 0,
+            callback: (v: number | string) => ctx.formatTick(Number(v)),
+          },
         },
-        // One y axis, no title, a light horizontal grid.
+        // One y axis of the shared width, no title, a light horizontal grid.
         y: {
           type: "linear",
           min: 0,
           max: axis.max,
           stacked,
+          afterFit: fitYAxis,
           grid: { color: RULE, drawTicks: false },
           border: { display: false },
           title: { display: false },
-          ticks: { color: INK_3, padding: 6, stepSize: axis.step, maxTicksLimit: 5, includeBounds: false, callback: uniqueTicks((v) => tick(v ?? 0)) },
+          ticks: { color: INK_3, padding: 6, stepSize: axis.step, maxTicksLimit: 6, includeBounds: false, callback: uniqueTicks((v) => tick(v ?? 0)) },
         },
       },
       plugins: {

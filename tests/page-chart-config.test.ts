@@ -14,10 +14,12 @@ import {
   INK,
   INK_3,
   rateLabel,
+  roundMinuteTicks,
   RULE,
   SURFACE,
   tooltipStyle,
 } from "../src/page-chart-config";
+import { Y_AXIS_WIDTH } from "../src/chart-shape";
 import { createMockSource } from "../src/source";
 import type { MetricsResponse, ServiceMetrics } from "../src/types";
 
@@ -104,7 +106,7 @@ describe("hero config", () => {
       expect(panel.options.scales.x.min).toBe(T - 30 * 60000);
       expect(panel.options.scales.x.max).toBe(T);
       expect(panel.options.scales.x.ticks.callback(T)).toBe("10:36 pm");
-      expect(panel.options.scales.y.ticks.maxTicksLimit).toBe(5);
+      expect(panel.options.scales.y.ticks.maxTicksLimit).toBe(6);
     }
     const reads = heroPanels(fs())[0].datasets[0].data;
     // Bucket centres; the last bucket is the minute ending at generatedAt.
@@ -123,6 +125,32 @@ describe("hero config", () => {
     expect(heroTooltipTitle([lineItem("Reads/min", T + 7000, 1)])).toBe("10:36:07 pm");
     expect(heroTooltipTitle([])).toBe("");
     expect(rateLabel(lineItem("Reads/min", T, 51.64))).toBe(" Reads/min: 51.64");
+  });
+
+  it("both panels share the y width; only writes and deletes labels the 5-minute time ticks", () => {
+    type X = { min: number; max: number; grid: { display: boolean }; afterBuildTicks: (s: unknown) => void; ticks: { display: boolean; callback: (v: number) => string } };
+    const panels = heroConfig(fs(), T).panels.map((p) => (p.config.options as unknown as { scales: { x: X; y: { afterFit: (s: { width: number }) => void } } }).scales);
+    for (const scales of panels) {
+      const fake = { width: 0 };
+      scales.y.afterFit(fake);
+      expect(fake.width).toBe(Y_AXIS_WIDTH);
+      expect(scales.x.grid.display).toBe(true);
+    }
+    const [reads, writes] = panels.map((s) => s.x);
+    expect(reads.ticks.display).toBe(false);
+    expect(writes.ticks.display).toBe(true);
+    expect([reads.min, reads.max]).toEqual([writes.min, writes.max]);
+    const ticksOf = (x: X) => {
+      const scale = { min: x.min, max: x.max, ticks: [] as { value: number }[] };
+      x.afterBuildTicks(scale);
+      return scale.ticks.map((t) => t.value);
+    };
+    expect(ticksOf(reads)).toEqual(ticksOf(writes));
+    const ticks = ticksOf(writes);
+    expect(ticks).toHaveLength(6);
+    expect(ticks.slice(1).map((t, i) => t - ticks[i])).toEqual(new Array(5).fill(5 * 60000));
+    expect(ticks.map((t) => writes.ticks.callback(t))).toEqual(["10:10 pm", "10:15 pm", "10:20 pm", "10:25 pm", "10:30 pm", "10:35 pm"]);
+    expect(writes.ticks.callback(T)).toBe("10:36 pm");
   });
 
   it("has empty buckets when Firestore is missing", () => {
@@ -144,20 +172,34 @@ describe("hosting config", () => {
     const scales = cfg.options!.scales! as Record<string, Record<string, unknown>>;
     expect(scales.x.stacked).toBe(true);
     expect(scales.y.stacked).toBe(true);
-    expect(scales.x.ticks).toMatchObject({ maxTicksLimit: 6 });
+    expect(scales.x.ticks).toMatchObject({ autoSkip: false });
+    expect((scales.x.ticks as { maxTicksLimit?: number }).maxTicksLimit).toBeUndefined();
+    expect(scales.x.grid).toMatchObject({ display: true, color: RULE });
+    // Only the round 5-minute labels are kept: 6 of the 30.
+    expect(scales.x.afterBuildTicks).toBe(roundMinuteTicks);
+    const scale = { ticks: cfg.data.labels!.map((_l, i) => ({ value: i })), chart: { data: { labels: cfg.data.labels } } };
+    roundMinuteTicks(scale);
+    expect(scale.ticks).toHaveLength(6);
+    const kept = scale.ticks.map((t) => cfg.data.labels![t.value]);
+    expect(kept.every((l) => Number(/:(\d+)/.exec(l)![1]) % 5 === 0)).toBe(true);
+    expect(kept).toEqual(["10:10 pm", "10:15 pm", "10:20 pm", "10:25 pm", "10:30 pm", "10:35 pm"]);
+    // The y axis has the shared width.
+    const fake = { width: 0 };
+    (scales.y.afterFit as (s: { width: number }) => void)(fake);
+    expect(fake.width).toBe(Y_AXIS_WIDTH);
     // The y ticks show byte units without needless decimals or repeated labels.
     const yTicks = scales.y.ticks as { callback: (v: number, i: number, ticks: { value: number }[]) => string | null; maxTicksLimit: number };
     expect(yTicks.callback).toBe(hostBytesTick);
     expect(yTicks.callback(1000, 0, [{ value: 1000 }])).toBe("1 kB");
     expect(yTicks.callback(1500, 0, [{ value: 1500 }])).toBe("1.5 kB");
-    expect(yTicks.maxTicksLimit).toBe(5);
+    expect(yTicks.maxTicksLimit).toBe(6);
     expect(bytesTick(1000)).toBe("1.0 kB");
     // One y axis, no curve, round steps over the stacked sum.
     expect(Object.keys(scales).sort()).toEqual(["x", "y"]);
     expect(cfg.data.datasets.every((d) => (d as { tension?: number }).tension === 0)).toBe(true);
     const top = Math.max(...Array.from({ length: 30 }, (_, i) => cfg.data.datasets.reduce((a, d) => a + (d.data[i] ?? 0), 0)));
     expect(scales.y.max as number).toBeGreaterThanOrEqual(top);
-    expect((scales.y.max as number) / (yTicks as unknown as { stepSize: number }).stepSize).toBeLessThanOrEqual(4);
+    expect((scales.y.max as number) / (yTicks as unknown as { stepSize: number }).stepSize).toBeLessThanOrEqual(5);
   });
 
   it("all-zero data still gets a 0..1 kB y axis with no duplicate tick labels", () => {

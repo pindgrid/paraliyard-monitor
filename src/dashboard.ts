@@ -96,8 +96,8 @@ function hero(data: MetricsResponse): string {
     <p class="hint">Last 30 minutes, updating live. Times in IST. Click the chart or any row below to see its full history.</p>
   </div>
   <div class="hero-chart" data-open="fs" ${OPENER_ATTRS} aria-label="Open Firestore history">
-    <div class="hero-panel"><canvas role="img" aria-label="Reads per minute, last 30 minutes"></canvas></div>
-    <div class="hero-panel"><canvas data-panel="writes" role="img" aria-label="Writes and deletes per minute, last 30 minutes"></canvas></div>
+    <div class="hero-panel hero-panel--reads"><canvas role="img" aria-label="Reads per minute, last 30 minutes"></canvas></div>
+    <div class="hero-panel hero-panel--writes"><canvas data-panel="writes" role="img" aria-label="Writes and deletes per minute, last 30 minutes"></canvas></div>
   </div>
 </section>`;
 }
