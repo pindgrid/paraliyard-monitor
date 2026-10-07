@@ -84,6 +84,17 @@ describe("chartSvg", () => {
     expect(band.svg).toContain("No data before 18 Sept");
   });
 
+  it("thins out axis labels on small charts so they never overlap", () => {
+    const small = chartSvg(spec({ height: 60 }), 280);
+    const yLabels = small.svg.match(/class="c-ytick"/g) ?? [];
+    expect(yLabels.length).toBeLessThan(4);
+    const xLabels = [...small.svg.matchAll(/class="c-xtick"[^>]*>([^<]+)</g)].map((m) => m[1]);
+    expect(xLabels.length).toBeGreaterThan(0);
+    expect(xLabels.length).toBeLessThanOrEqual(Math.floor(small.pw / 58) + 1);
+    const big = chartSvg(spec({}), 800);
+    expect((big.svg.match(/class="c-xtick"/g) ?? []).length).toBeGreaterThan(xLabels.length);
+  });
+
   it("uses theme variables for every colour", () => {
     const { svg } = chartSvg(spec({}), 800);
     expect(svg).toContain("fill:var(--c-reads)");

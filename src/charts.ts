@@ -20,7 +20,10 @@ export interface ChartSeries {
 export interface ChartSpec {
   type: "bar" | "line" | "step";
   unit: Unit;
+  // With fit, the host's own height (set by the page layout) wins and this
+  // is only the fallback.
   height: number;
+  fit?: boolean;
   from: number;
   to: number;
   buckets: ChartBucket[];
@@ -115,28 +118,34 @@ export function chartSvg(spec: ChartSpec, W: number): ChartLayout {
   const labels = ticks.map((v) => tickLabel(v, spec.unit, sc));
   const left = spec.axisWidth ?? Math.max(30, Math.max(...labels.map((l) => l.length)) * 6.3 + 14);
   const right = 6;
-  const topPad = spec.title ? 24 : 8;
-  const bottom = spec.xLabels === false ? 4 : 22;
+  const topPad = spec.title ? 20 : 8;
+  const bottom = spec.xLabels === false ? 4 : 20;
   const pw = Math.max(10, W - left - right);
-  const ph = H - topPad - bottom;
+  const ph = Math.max(10, H - topPad - bottom);
   const span = spec.to - spec.from;
   const X = (t: number) => left + ((t - spec.from) / span) * pw;
   const Y = (v: number) => topPad + ph - (Math.min(v, sc.max) / sc.max) * ph;
   const f = (x: number) => x.toFixed(1);
+  // Small charts label every other tick (or fewer) so labels never overlap.
+  const yEvery = Math.ceil(14 / Math.max(1, ph / Math.max(1, ticks.length - 1)));
+  const tStep = timeStepFor(span);
+  const xEvery = Math.ceil((span <= 25 * HOUR ? 58 : 48) / Math.max(1, (tStep / span) * pw));
 
   let s = `<svg class="chart-svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" aria-hidden="true">`;
   s += `<defs><pattern id="h${id}" width="7" height="7" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="3" height="7" style="fill:var(--hatch)"/></pattern></defs>`;
-  if (spec.title) s += `<text x="${left}" y="13" class="c-title">${esc(spec.title)}</text>`;
+  if (spec.title) s += `<text x="${left}" y="11" class="c-title">${esc(spec.title)}</text>`;
   ticks.forEach((v, k) => {
     const y = f(Y(v));
     s += `<line x1="${left}" x2="${W - right}" y1="${y}" y2="${y}" class="${v === 0 ? "c-base" : "c-grid"}"/>`;
-    s += `<text x="${left - 8}" y="${f(Y(v) + 3.5)}" class="c-ytick" text-anchor="end">${esc(labels[k])}</text>`;
+    if (k % yEvery === 0) s += `<text x="${left - 8}" y="${f(Y(v) + 3.5)}" class="c-ytick" text-anchor="end">${esc(labels[k])}</text>`;
   });
   for (const t of timeTicks(spec.from, spec.to)) {
     const x = X(t);
     if (x < left + 2 || x > W - right - 2) continue;
     s += `<line x1="${f(x)}" x2="${f(x)}" y1="${topPad}" y2="${topPad + ph}" class="c-vgrid"/>`;
-    if (spec.xLabels !== false) s += `<text x="${f(x)}" y="${H - 5}" class="c-xtick" text-anchor="middle">${esc(xLabel(t, span))}</text>`;
+    if (spec.xLabels !== false && Math.round((t + IST_OFF) / tStep) % xEvery === 0) {
+      s += `<text x="${f(x)}" y="${H - 5}" class="c-xtick" text-anchor="middle">${esc(xLabel(t, span))}</text>`;
+    }
   }
   if (spec.band) {
     const x1 = X(spec.from);
@@ -243,6 +252,7 @@ interface ChartHost extends HTMLElement {
   _highlight?: (i: number | null) => void;
   _spec?: ChartSpec;
   _w?: number;
+  _h?: number;
 }
 const observed = new WeakSet<HTMLElement>();
 let resizer: ResizeObserver | null = null;
@@ -252,14 +262,18 @@ function observe(host: ChartHost): void {
   resizer ??= new win.ResizeObserver((entries) => {
     for (const e of entries) {
       const h = e.target as ChartHost;
-      if (h._spec && Math.abs(e.contentRect.width - (h._w ?? 0)) > 1) draw(h, h._spec);
+      if (!h._spec) continue;
+      const wider = Math.abs(e.contentRect.width - (h._w ?? 0)) > 1;
+      const taller = h._spec.fit === true && Math.abs(e.contentRect.height - (h._h ?? 0)) > 1;
+      if (wider || taller) draw(h, h._spec);
     }
   });
   resizer.observe(host);
   observed.add(host);
 }
 
-// Draws spec into host and redraws it when host changes width.
+// Draws spec into host and redraws it when host changes width (or height,
+// for charts that fit their host).
 export function chart(host: HTMLElement, spec: ChartSpec): void {
   const h = host as ChartHost;
   h._spec = spec;
@@ -269,8 +283,11 @@ export function chart(host: HTMLElement, spec: ChartSpec): void {
 
 function draw(host: ChartHost, spec: ChartSpec): void {
   const W = Math.max(160, Math.floor(host.clientWidth || host.getBoundingClientRect().width || 600));
+  const fitH = spec.fit ? Math.floor(host.clientHeight) : 0;
+  const H = fitH > 0 ? Math.max(48, fitH) : spec.height;
   host._w = W;
-  const layout = chartSvg(spec, W);
+  host._h = fitH;
+  const layout = chartSvg(H === spec.height ? spec : { ...spec, height: H }, W);
   host.innerHTML = layout.svg;
   const doc = host.ownerDocument;
   const svg = host.firstElementChild as SVGSVGElement | null;
@@ -342,7 +359,7 @@ export function spark(values: readonly (number | null)[], color: string, opts: {
 }
 
 export function donut(parts: { value: number; color: string }[], size: number): string {
-  const stroke = 16;
+  const stroke = Math.max(8, Math.round(size * 0.11));
   const r = (size - stroke) / 2;
   const c = 2 * Math.PI * r;
   const total = parts.reduce((a, p) => a + (p.value || 0), 0);

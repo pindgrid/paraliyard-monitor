@@ -53,8 +53,13 @@ describe("page (mock mode)", () => {
 
   it("renders every section, in order, with no pause button", () => {
     const ids = [...root.querySelectorAll("#overview, #database, #functions, #storage, #hosting, #jobs")].map((el) => el.id);
-    expect(ids).toEqual(["overview", "database", "functions", "storage", "hosting", "jobs"]);
+    expect(ids).toEqual(["overview", "functions", "database", "storage", "hosting", "jobs"]);
     expect(root.querySelectorAll("[data-kpis] .kpi")).toHaveLength(6);
+    expect(root.querySelectorAll(".chart.fit")).toHaveLength(4);
+    const legend = [...root.querySelectorAll("[data-db-legend] span")].map(text);
+    expect(legend).toHaveLength(4);
+    expect(legend.slice(0, 3).map((l) => l.replace(/ [\d,]+$/, ""))).toEqual(["Reads", "Writes", "Deletes"]);
+    expect(legend[3]).toBe("in 30 min");
     expect(root.querySelectorAll("[data-fn-body] tr")).toHaveLength(10);
     expect(root.querySelectorAll("[data-job-list] .job")).toHaveLength(2);
     expect($('[data-chart="reads"] svg')).not.toBeNull();

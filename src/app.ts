@@ -1,4 +1,4 @@
-// The dashboard page: header, health banner, KPI cards, database, functions,
+// The dashboard page: header, health and KPI cards, functions, database,
 // storage, hosting, scheduled jobs and the history drawer. Data comes from
 // /api/metrics and /api/history in live mode, from src/demo.ts in mock mode,
 // and nothing is requested in off mode (the config.json kill switch).
@@ -95,8 +95,6 @@ const ICON = {
   ok: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>',
   bad: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 8v5M12 16.5v.5"/><path d="M10.3 3.9L2.4 17.5A2 2 0 0 0 4.1 20.5h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>',
   pause: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M9 7v10M15 7v10"/></svg>',
-  okSmall: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>',
-  badSmall: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M12 7v6M12 17v.5"/></svg>',
   clock: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
   db: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg>',
   bolt: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L4 14h7l-1 8 9-12h-7z"/></svg>',
@@ -109,25 +107,28 @@ const ICON = {
 };
 
 const OPENER = 'role="button" tabindex="0"';
-const head = (id: string, icon: string, title: string, desc: string, action = "") =>
-  `<div class="card-head"><div><h2 id="${id}"><span class="h-icon" aria-hidden="true">${icon}</span>${title}</h2><p>${desc}</p></div>${action}</div>`;
-const historyBtn = (open: string, label: string) => `<button class="chip-btn" type="button" data-open="${open}">${label} ${ICON.chevron}</button>`;
+// A card title with a short tag after it (hidden when the card is narrow)
+// and an optional action on the right.
+const head = (id: string, icon: string, title: string, tag: string, action = "", hint = "") =>
+  `<div class="card-head"${hint ? ` title="${hint}"` : ""}><div class="ch-title"><h2 id="${id}"><span class="h-icon" aria-hidden="true">${icon}</span>${title}</h2>${tag ? `<span class="ch-tag">${tag}</span>` : ""}</div>${action}</div>`;
+const historyBtn = (open: string) => `<button class="chip-btn" type="button" data-open="${open}">History ${ICON.chevron}</button>`;
 
+// On a PC or laptop screen everything fits one screen (see styles.css):
+// overview strip on top, then functions on the left, database and hosting in
+// the middle, storage and scheduled jobs on the right.
 function shell(): string {
   const refresh = REFRESH_CHOICES.map((s) => `<button type="button" data-s="${s}">${s === 300 ? "5m" : `${s}s`}</button>`).join("");
   return `
+<div class="page">
 <header class="topbar">
   <div class="topbar-inner">
-    <a class="brand" href="#overview" aria-label="Paraliyard Monitor, top of page">
+    <div class="brand">
       <span class="logo" aria-hidden="true">${ICON.logo}</span>
       <span class="brand-text"><strong>Paraliyard Monitor</strong>
         <span class="brand-sub"><span class="gur" lang="pa">ਪਰਾਲੀ ਯਾਰਡ</span><span aria-hidden="true">·</span><span>${PROJECT_ID}</span></span></span>
-    </a>
-    <nav class="nav" aria-label="Sections">
-      ${["overview", "database", "functions", "storage", "hosting", "jobs"].map((id) => `<a href="#${id}" data-nav="${id}">${id === "overview" ? "Overview" : id[0].toUpperCase() + id.slice(1)}</a>`).join("")}
-    </nav>
+    </div>
+    <p class="note" data-note hidden></p>
     <div class="actions">
-      <span class="pill ok" data-status ${OPENER} hidden></span>
       <span class="live" data-live><i></i><span data-live-text>Live</span></span>
       <span class="updated" data-updated>${DASH}</span>
       <div class="seg" data-refresh-seg role="group" aria-label="Refresh every">${refresh}</div>
@@ -136,70 +137,65 @@ function shell(): string {
   </div>
 </header>
 <main class="main">
-  <p class="note" data-note hidden></p>
-  <section class="banner" id="overview" aria-live="polite">
-    <div class="banner-main">
+  <section class="overview" id="overview" aria-label="Overview">
+    <div class="health" data-health aria-live="polite">
       <div class="status-icon" data-banner-icon aria-hidden="true"></div>
-      <div><h1 data-banner-title>Loading…</h1><p class="banner-sub" data-banner-sub></p><ul class="reasons" data-banner-reasons hidden></ul></div>
+      <div class="health-text"><h1 data-banner-title>Loading…</h1><p data-banner-sub></p><ul class="reasons" data-banner-reasons hidden></ul></div>
     </div>
-    <div class="facts" data-facts></div>
+    <div class="kpis" data-kpis role="group" aria-label="Key numbers"></div>
   </section>
-  <div class="sections" data-sections>
-    <section class="kpis" data-kpis aria-label="Key numbers"></section>
-    <section class="card" id="database" aria-labelledby="dbTitle">
-      ${head("dbTitle", ICON.db, "Database activity", "Firestore database “yard” · per minute, last 30 minutes, updating live", historyBtn("fs", "Full history"))}
-      <div class="db-grid">
-        <div class="chart-stack">
-          <div class="chart" data-chart="reads" data-open="fs" ${OPENER} aria-label="Reads per minute. Open full history"></div>
-          <div class="chart" data-chart="writes" data-open="fs" ${OPENER} aria-label="Writes and deletes per minute. Open full history"></div>
-          <div class="legend"><span><i class="sw" style="background:var(--c-reads)"></i>Reads</span><span><i class="sw" style="background:var(--c-writes)"></i>Writes</span><span><i class="sw" style="background:var(--c-deletes)"></i>Deletes</span></div>
-        </div>
-        <div class="stats-panel">
-          <div class="big"><b data-reads-now>${DASH}</b><span>reads / min now</span></div>
-          <table class="mini" aria-label="Database summary, last 30 minutes">
-            <thead><tr><th>Last 30 min</th><th>Now</th><th>Avg</th><th>Peak</th><th>Total</th></tr></thead>
-            <tbody data-db-stats></tbody>
-          </table>
-        </div>
-      </div>
-    </section>
+  <div class="board" data-sections>
     <section class="card" id="functions" aria-labelledby="fnTitle">
-      ${head("fnTitle", ICON.bolt, "Cloud Functions", "CPU and RAM are p99 · activity shows requests per minute over 30 minutes, red marks a minute with errors")}
-      <div class="toolbar">
-        <div class="filters" data-fn-filters role="group" aria-label="Filter functions"></div>
-        <label class="search">${ICON.search}<input data-fn-search type="search" placeholder="Search functions" autocomplete="off" aria-label="Search functions"></label>
+      <div class="card-head">
+        <div class="ch-title"><h2 id="fnTitle"><span class="h-icon" aria-hidden="true">${ICON.bolt}</span>Cloud Functions</h2><span class="ch-tag">last 30 min</span></div>
+        <div class="toolbar">
+          <div class="filters" data-fn-filters role="group" aria-label="Filter functions"></div>
+          <label class="search">${ICON.search}<input data-fn-search type="search" placeholder="Search" autocomplete="off" aria-label="Search functions"></label>
+        </div>
       </div>
       <div class="tablewrap">
         <table class="fn" aria-label="Cloud Functions">
-          <colgroup><col style="width:23%"><col style="width:9%"><col style="width:13%"><col style="width:13%"><col style="width:9%"><col style="width:10%"><col style="width:10%"><col style="width:13%"></colgroup>
+          <colgroup><col style="width:30%"><col style="width:10%"><col style="width:11%"><col style="width:11%"><col style="width:9.5%"><col style="width:8.5%"><col style="width:7%"><col style="width:13%"></colgroup>
           <thead><tr data-fn-head></tr></thead>
           <tbody data-fn-body></tbody>
           <tfoot data-fn-foot></tfoot>
         </table>
       </div>
     </section>
-    <div class="two">
-      <section class="card" id="storage" aria-labelledby="stTitle">
-        ${head("stTitle", ICON.layers, "Cloud Storage", "Space used per bucket, and the total over 30 days", historyBtn("sum:storage", "History"))}
+    <section class="card" id="database" aria-labelledby="dbTitle">
+      ${head("dbTitle", ICON.db, "Firestore", "database “yard”", historyBtn("fs"))}
+      <div class="card-body">
+        <div class="chart fit" data-chart="reads" data-open="fs" ${OPENER} aria-label="Reads per minute. Open full history"></div>
+        <div class="chart fit" data-chart="writes" data-open="fs" ${OPENER} aria-label="Writes and deletes per minute. Open full history"></div>
+        <div class="legend" data-db-legend></div>
+      </div>
+    </section>
+    <section class="card" id="storage" aria-labelledby="stTitle">
+      ${head("stTitle", ICON.layers, "Cloud Storage", "space used", historyBtn("sum:storage"))}
+      <div class="card-body">
         <div class="storage-top"><div class="donut" data-donut></div><div class="rows" data-bucket-rows></div></div>
-        <div class="push">
-          <p class="sub-title">Storage used, last 30 days <span data-growth></span></p>
-          <div class="chart" data-chart="storage" data-open="sum:storage" ${OPENER} aria-label="Storage used over 30 days. Open history"></div>
-        </div>
-      </section>
-      <section class="card" id="hosting" aria-labelledby="hoTitle">
-        ${head("hoTitle", ICON.globe, "Firebase Hosting", "Data served per minute, last 30 minutes", historyBtn("sum:hosting", "History"))}
-        <div class="chart" data-chart="hosting" data-open="sum:hosting" ${OPENER} aria-label="Data served per minute. Open history"></div>
-        <div class="rows push" data-site-rows></div>
-      </section>
-    </div>
+        <p class="sub-title"><span>Total stored, last 30 days</span><span data-growth></span></p>
+        <div class="chart fit" data-chart="storage" data-open="sum:storage" ${OPENER} aria-label="Storage used over 30 days. Open history"></div>
+      </div>
+    </section>
+    <section class="card" id="hosting" aria-labelledby="hoTitle">
+      ${head("hoTitle", ICON.globe, "Firebase Hosting", "last 30 min", historyBtn("sum:hosting"))}
+      <div class="card-body">
+        <div class="chart fit" data-chart="hosting" data-open="sum:hosting" ${OPENER} aria-label="Data served per minute. Open history"></div>
+        <div class="rows" data-site-rows></div>
+      </div>
+    </section>
     <section class="card" id="jobs" aria-labelledby="jobTitle">
-      ${head("jobTitle", ICON.schedule, "Scheduled jobs", "Each square is one day: green, the scheduled run succeeded · red, it failed or was missed · dashed, nothing scheduled")}
-      <div class="jobs" data-job-list></div>
+      ${head("jobTitle", ICON.schedule, "Scheduled jobs", "last 14 days", "", "Each square is one day: green, the scheduled run succeeded · red, it failed or was missed · dashed, nothing scheduled")}
+      <div class="card-body">
+        <div class="jobs" data-job-list></div>
+        <div class="legend jobs-legend"><span><i class="sw" style="background:var(--c-writes)"></i>Succeeded</span><span><i class="sw" style="background:var(--c-deletes)"></i>Failed or missed</span><span><i class="sw off"></i>Not scheduled</span></div>
+      </div>
     </section>
   </div>
   <footer class="footer"><span data-foot></span><span>Times in IST · Click any chart, card or row for its full history</span></footer>
 </main>
+</div>
 <div class="scrim" data-scrim></div>
 <aside class="drawer" data-drawer role="dialog" aria-modal="true" aria-labelledby="dTitle" aria-hidden="true">
   <div class="d-head">
@@ -247,15 +243,15 @@ interface DrawerState {
   other?: OtherCalls | null;
 }
 
-const FN_COLS: { key: string | null; label: string; r?: boolean }[] = [
-  { key: "name", label: "Function" },
-  { key: "status", label: "Status" },
-  { key: "cpu", label: "CPU p99" },
-  { key: "ram", label: "RAM p99" },
-  { key: "req", label: "Req / min", r: true },
-  { key: "err", label: "Errors 30m", r: true },
-  { key: "inst", label: "Instances", r: true },
-  { key: null, label: "Activity, 30 min" },
+const FN_COLS: { key: string | null; label: string; title: string; r?: boolean }[] = [
+  { key: "name", label: "Function", title: "Function name" },
+  { key: "status", label: "Status", title: "Active, idle or with errors in the last 30 minutes" },
+  { key: "cpu", label: "CPU p99", title: "CPU use, 99th percentile" },
+  { key: "ram", label: "RAM p99", title: "Memory use, 99th percentile" },
+  { key: "req", label: "Req/min", title: "Requests in the latest minute", r: true },
+  { key: "err", label: "Errors", title: "Errors in the last 30 minutes", r: true },
+  { key: "inst", label: "Inst.", title: "Instances running now", r: true },
+  { key: null, label: "Last 30 min", title: "Requests per minute over 30 minutes; red marks a minute with errors" },
 ];
 const STATUS_ORDER: Record<FnStatus, number> = { error: 0, active: 1, idle: 2 };
 const STATUS_LABEL: Record<FnStatus, string> = { active: "Active", idle: "Idle", error: "Error" };
@@ -346,7 +342,7 @@ export async function startApp({ root, fetchFn = fetch, doc = document, config, 
 
   // ---------- header, banner, KPIs ----------
 
-  function renderHeader(m: Model | null, h: Health | null) {
+  function renderHeader(m: Model | null) {
     const live = $("[data-live]");
     const off = state.mode === "off";
     live.className = `live${off ? " paused" : !state.online ? " down" : ""}`;
@@ -358,53 +354,42 @@ export async function startApp({ root, fetchFn = fetch, doc = document, config, 
       b.setAttribute("aria-pressed", String(Number(b.dataset.s) === state.refresh));
       b.disabled = off;
     }
-    const pill = $("[data-status]");
-    if (m && h) {
-      pill.hidden = false;
-      pill.className = `pill ${h.ok ? "ok" : "bad"}`;
-      pill.innerHTML = h.ok ? `${ICON.okSmall}All healthy` : `${ICON.badSmall}${h.reasons.length} issue${h.reasons.length > 1 ? "s" : ""}`;
-      pill.dataset.open = h.ok ? "sum:functions" : h.reasons[0].open;
-      pill.setAttribute("aria-label", h.ok ? "All healthy. Open details" : `${h.reasons.map((r) => r.text).join(", ")}. Open details`);
-    } else {
-      pill.hidden = true;
-      delete pill.dataset.open;
-    }
+    // One line in the top bar; the full message is its tooltip.
     const note = $("[data-note]");
     note.className = "note";
     if (off) {
       note.hidden = false;
-      note.textContent = "Live monitoring is paused: the kill switch in config.json is set to off, so nothing is requested.";
+      note.textContent = "Kill switch on: nothing is requested";
+      note.title = "Live monitoring is paused: the kill switch in config.json is set to off, so nothing is requested.";
     } else if (!state.online) {
       note.hidden = false;
       note.className = "note err";
-      note.textContent = `Can't reach the metrics service (${state.err}). Retrying in ${state.refresh} seconds.`;
+      note.textContent = `Can't reach the metrics service (${state.err}). Retrying in ${state.refresh} s`;
+      note.title = note.textContent;
     } else if (state.mode === "mock") {
       note.hidden = false;
-      note.innerHTML = '<b>Demo data.</b>&nbsp;Sample numbers shaped like the yard; set mode to "live" in config.json to see real numbers.';
+      note.innerHTML = "<b>Demo data.</b>&nbsp;Sample numbers, not the live yard";
+      note.title = 'Sample numbers shaped like the yard. Set mode to "live" in config.json to see real numbers.';
     } else if (m?.stale) {
       note.hidden = false;
-      note.textContent = "Showing the last good data: the latest refresh on the server failed.";
+      note.textContent = "Showing the last good data";
+      note.title = "Showing the last good data: the latest refresh on the server failed.";
     } else note.hidden = true;
     $("[data-foot]").textContent = `Data from Google Cloud Monitoring (read-only) · Project ${PROJECT_ID} · Refreshes every ${state.refresh} s`;
   }
 
-  function renderBanner(m: Model, h: Health) {
-    $("#overview").className = `banner${h.ok ? "" : " bad"}`;
+  function renderHealth(m: Model, h: Health) {
+    $("[data-health]").className = `health${h.ok ? "" : " bad"}`;
     $("[data-banner-icon]").innerHTML = h.ok ? ICON.ok : ICON.bad;
     $("[data-banner-title]").textContent = h.ok ? "All systems healthy" : "Needs attention";
     const count = m.functions.length + 1 + m.buckets.length + m.sites.length + m.jobs.length;
-    $("[data-banner-sub]").textContent = `${count} services monitored across Cloud Functions, Firestore, Cloud Storage, Hosting and Scheduler.`;
+    const sub = $("[data-banner-sub]");
+    sub.hidden = !h.ok;
+    sub.textContent = `${count} services monitored`;
+    sub.title = `${count} services across Cloud Functions, Firestore, Cloud Storage, Hosting and Scheduler`;
     const ul = $("[data-banner-reasons]");
     ul.hidden = h.ok;
-    ul.innerHTML = h.reasons.map((r) => `<li><button type="button" data-open="${esc(r.open)}">${esc(r.text)}</button></li>`).join("");
-    const nightly = m.jobs.find((j) => j.id === "scheduler:pyNightlyExport");
-    const next = m.jobs.filter((j) => j.nextRun !== null).sort((a, b) => (a.nextRun ?? 0) - (b.nextRun ?? 0))[0];
-    const facts: [string, string][] = [
-      ["Errors, 30 min", h.errs ? `${h.errs} error${h.errs > 1 ? "s" : ""}` : "None"],
-      ["Last nightly export", nightly?.lastRunAt ? `${nightly.lastResult === "success" ? "✓ " : ""}${fDayTime(nightly.lastRunAt)}` : DASH],
-      ["Next job", next?.nextRun ? `in ${until(next.nextRun - Date.now())}` : DASH],
-    ];
-    $("[data-facts]").innerHTML = facts.map((f) => `<div class="fact"><span>${esc(f[0])}</span><b>${esc(f[1])}</b></div>`).join("");
+    ul.innerHTML = h.reasons.map((r) => `<li><button type="button" data-open="${esc(r.open)}" title="${esc(r.text)}">${esc(r.text)}</button></li>`).join("");
   }
 
   function renderKpis(m: Model) {
@@ -421,31 +406,32 @@ export async function startApp({ root, fetchFn = fetch, doc = document, config, 
     const nextPct = next?.nextRun && conf ? Math.max(0, Math.min(100, 100 - ((next.nextRun - Date.now()) / conf.every) * 100)) : 0;
     const peakReads = Math.max(0, ...reads.filter(isNum));
     const cards: { open: string; color: string; label: string; value: string; unit: string; sub: string; alert?: boolean; spark?: string; progress?: number }[] = [
-      { open: "sum:functions", color: "var(--c-req)", label: "Function requests", value: num(last(req)), unit: "/ min", sub: `${active} of ${m.functions.length} functions active`, spark: spark(req, "var(--c-req)", { errors: err }) },
+      { open: "sum:functions", color: "var(--c-req)", label: "Function requests", value: num(last(req)), unit: "/min", sub: `${active} of ${m.functions.length} functions active`, spark: spark(req, "var(--c-req)", { errors: err }) },
       { open: "sum:functions", color: "var(--c-err)", label: "Errors, 30 min", value: num(errs), unit: "", sub: errs ? "Click to see when" : "No errors", alert: errs > 0, spark: spark(err, "var(--c-err)") },
-      { open: "fs", color: "var(--c-reads)", label: "Database reads", value: num(last(reads)), unit: "/ min", sub: `Peak ${num(peakReads)} in 30 min`, spark: spark(reads, "var(--c-reads)") },
+      { open: "fs", color: "var(--c-reads)", label: "Database reads", value: num(last(reads)), unit: "/min", sub: `Peak ${num(peakReads)} in 30 min`, spark: spark(reads, "var(--c-reads)") },
       {
         open: "sum:storage",
         color: "var(--c-storage)",
         label: "Storage used",
         value: bytes(stored),
         unit: "",
-        sub: growth !== null ? `${growth >= 0 ? "+" : "−"}${bytes(Math.abs(growth))} / day over 7 days` : `${m.buckets.length} buckets`,
+        sub: growth !== null ? `${growth >= 0 ? "+" : "−"}${bytes(Math.abs(growth))}/day · last 7 days` : `${m.buckets.length} buckets`,
         spark: state.storage?.length ? spark(state.storage.map((p) => p.v), "var(--c-storage)", { type: "line" }) : spark(new Array<number>(30).fill(0), "var(--c-storage)"),
       },
-      { open: "sum:hosting", color: "var(--c-site-2)", label: "Hosting served, 30 min", value: bytes(sum(served)), unit: "", sub: `${m.sites.length} sites · ${bytes(last(served) ?? 0)} / min now`, spark: spark(served, "var(--c-site-2)") },
+      { open: "sum:hosting", color: "var(--c-site-2)", label: "Hosting, 30 min", value: bytes(sum(served)), unit: "", sub: `${m.sites.length} sites · ${bytes(last(served) ?? 0)}/min now`, spark: spark(served, "var(--c-site-2)") },
       { open: next ? `job:${next.id}` : "sum:functions", color: "var(--c-writes)", label: "Next scheduled job", value: next?.nextRun ? `in ${until(next.nextRun - Date.now())}` : DASH, unit: "", sub: next?.nextRun ? `${next.name} · ${fTime(next.nextRun)}` : "No schedule", progress: nextPct },
     ];
+    // Label on top, the number with its 30-minute sparkline beside it, then a
+    // detail line. The next-job card shows a thin countdown bar instead.
     $("[data-kpis]").innerHTML = cards
       .map(
         (c) =>
-          `<div class="kpi${c.alert ? " alert" : ""}" data-open="${esc(c.open)}" ${OPENER} aria-label="${esc(`${c.label}: ${c.value} ${c.unit}`.trim())}">` +
+          `<div class="kpi${c.alert ? " alert" : ""}${c.progress !== undefined ? " countdown" : ""}" data-open="${esc(c.open)}" ${OPENER} aria-label="${esc(`${c.label}: ${c.value} ${c.unit}`.trim())}">` +
           `<div class="kpi-label"><i style="background:${c.color}"></i>${esc(c.label)}</div>` +
           `<div class="kpi-value num">${esc(c.value)}${c.unit ? `<small>${esc(c.unit)}</small>` : ""}</div>` +
-          `<div class="kpi-sub">${esc(c.sub)}</div>` +
-          (c.progress !== undefined
-            ? `<div class="progress" title="Time until the next run"><b style="width:${c.progress.toFixed(1)}%"></b></div><div class="kpi-foot"><span>Last run</span><span>Next run</span></div>`
-            : `<div class="kpi-spark">${c.spark ?? ""}</div>`) +
+          (c.progress !== undefined ? "" : `<div class="kpi-spark">${c.spark ?? ""}</div>`) +
+          `<div class="kpi-sub" title="${esc(c.sub)}">${esc(c.sub)}</div>` +
+          (c.progress !== undefined ? `<div class="progress" title="Time until the next run"><b style="width:${c.progress.toFixed(1)}%"></b></div>` : "") +
           "</div>",
       )
       .join("");
@@ -467,11 +453,12 @@ export async function startApp({ root, fetchFn = fetch, doc = document, config, 
     const a = $('[data-chart="reads"]');
     const b = $('[data-chart="writes"]');
     const sync = [a, b];
-    chart(a, { type: "bar", unit: "count", height: 220, from, to, buckets: bk, title: "Reads per minute", xLabels: false, axisWidth: 46, series: [{ label: "Reads", color: "var(--c-reads)", values: fs.reads ?? [] }], tooltip: tt, sync });
+    chart(a, { type: "bar", unit: "count", height: 150, fit: true, from, to, buckets: bk, title: "Reads per minute", xLabels: false, axisWidth: 46, series: [{ label: "Reads", color: "var(--c-reads)", values: fs.reads ?? [] }], tooltip: tt, sync });
     chart(b, {
       type: "bar",
       unit: "count",
-      height: 140,
+      height: 120,
+      fit: true,
       from,
       to,
       buckets: bk,
@@ -485,11 +472,13 @@ export async function startApp({ root, fetchFn = fetch, doc = document, config, 
       tooltip: tt,
       sync,
     });
-    const r = seriesStats(fs.reads);
-    $("[data-reads-now]").textContent = num(r.now);
-    const row = (c: string, l: string, st: ReturnType<typeof seriesStats>) =>
-      `<tr><td><i class="sw" style="background:${c}"></i>${l}</td><td>${num(st.now)}</td><td>${num(st.avg)}</td><td>${num(st.peak)}</td><td>${num(st.total)}</td></tr>`;
-    $("[data-db-stats]").innerHTML = row("var(--c-reads)", "Reads", r) + row("var(--c-writes)", "Writes", seriesStats(fs.writes)) + row("var(--c-deletes)", "Deletes", seriesStats(fs.deletes));
+    // The legend doubles as the 30-minute totals.
+    const item = (c: string, l: string, s: Series | null) => {
+      const st = seriesStats(s);
+      return `<span title="${l}: ${num(st.now)} in the latest minute, ${num(st.avg)} average, ${num(st.peak)} peak"><i class="sw" style="background:${c}"></i>${l} <b class="num">${num(st.total)}</b></span>`;
+    };
+    $("[data-db-legend]").innerHTML =
+      item("var(--c-reads)", "Reads", fs.reads) + item("var(--c-writes)", "Writes", fs.writes) + item("var(--c-deletes)", "Deletes", fs.deletes) + '<span class="muted">in 30 min</span>';
   }
 
   function renderFunctions(m: Model) {
@@ -505,7 +494,7 @@ export async function startApp({ root, fetchFn = fetch, doc = document, config, 
     $("[data-fn-head]").innerHTML = FN_COLS.map((c) => {
       const sorted = c.key !== null && state.fnSort.key === c.key;
       const ind = sorted && state.fnSort.dir < 0 ? "▼" : "▲";
-      return `<th${c.r ? ' class="r"' : ""}${sorted ? ` aria-sort="${state.fnSort.dir > 0 ? "ascending" : "descending"}"` : ""}>${
+      return `<th${c.r ? ' class="r"' : ""} title="${esc(c.title)}"${sorted ? ` aria-sort="${state.fnSort.dir > 0 ? "ascending" : "descending"}"` : ""}>${
         c.key ? `<button type="button" data-sort="${c.key}">${c.label} <span class="sort-ind">${ind}</span></button>` : c.label
       }</th>`;
     }).join("");
@@ -524,7 +513,7 @@ export async function startApp({ root, fetchFn = fetch, doc = document, config, 
             const errs = Math.round(sum(f.err));
             return (
               `<tr data-open="fn:${esc(f.id)}" data-fn="${esc(f.id)}" ${OPENER} aria-label="Open history for ${esc(f.name)}">` +
-              `<td><div class="fname"><span>${esc(f.name)}</span><em class="gen">${f.gen === 1 ? "1st gen" : "2nd gen"}</em></div></td>` +
+              `<td title="${esc(f.name)}, ${f.gen === 1 ? "1st" : "2nd"} gen"><div class="fname"><span>${esc(f.name)}</span>${f.gen === 1 ? '<em class="gen">1st gen</em>' : ""}</div></td>` +
               `<td><span class="status ${st}">${STATUS_LABEL[st]}</span></td>` +
               `<td>${meterCell(f.cpu, "var(--c-cpu)")}</td><td>${meterCell(f.ram, "var(--c-ram)")}</td>` +
               `<td class="r num">${num(last(f.req))}</td>` +
@@ -546,22 +535,21 @@ export async function startApp({ root, fetchFn = fetch, doc = document, config, 
   function renderStorage(m: Model) {
     const total = m.buckets.reduce((s, b) => s + (b.bytes ?? 0), 0);
     $("[data-donut]").innerHTML =
-      donut(m.buckets.map((b, i) => ({ value: b.bytes ?? 0, color: BUCKET_COLORS[i % BUCKET_COLORS.length] })), 148) +
+      donut(m.buckets.map((b, i) => ({ value: b.bytes ?? 0, color: BUCKET_COLORS[i % BUCKET_COLORS.length] })), 76) +
       `<div class="donut-center"><div><b>${bytes(total)}</b><span>total</span></div></div>`;
     $("[data-bucket-rows]").innerHTML = m.buckets
       .map((b, i) => {
         const share = total ? ((b.bytes ?? 0) / total) * 100 : 0;
         const color = BUCKET_COLORS[i % BUCKET_COLORS.length];
         return (
-          `<div class="row" data-open="st:${esc(b.id)}" ${OPENER} aria-label="Open history for bucket ${esc(b.name)}">` +
+          `<div class="row" data-open="st:${esc(b.id)}" ${OPENER} title="${esc(b.name)}" aria-label="Open history for bucket ${esc(b.name)}">` +
           `<i class="sw" style="background:${color}"></i><span class="name">${esc(shortBucket(b.name))}</span><span class="value">${bytes(b.bytes)}</span>` +
-          `<span class="detail"><span>${share.toFixed(0)}% of total</span><span>${num(last(b.req) ?? 0)} requests / min</span></span>` +
-          `<span class="sharebar"><b style="width:${share.toFixed(1)}%;background:${color}"></b></span></div>`
+          `<span class="detail"><span>${share.toFixed(0)}% of total</span><span>${num(last(b.req) ?? 0)} req/min</span></span></div>`
         );
       })
       .join("");
     const growth = storageGrowth(state.storage);
-    $("[data-growth]").textContent = growth !== null ? `${growth >= 0 ? "+" : "−"}${bytes(Math.abs(growth))} / day` : "";
+    $("[data-growth]").textContent = growth !== null ? `${growth >= 0 ? "+" : "−"}${bytes(Math.abs(growth))}/day` : "";
     const host = $('[data-chart="storage"]');
     if (!state.storage) {
       host.innerHTML = `<div class="d-msg">${state.storage === null ? "Storage history not available" : "Loading storage history…"}</div>`;
@@ -586,7 +574,8 @@ export async function startApp({ root, fetchFn = fetch, doc = document, config, 
     chart(host, {
       type: "step",
       unit: "bytes",
-      height: 168,
+      height: 140,
+      fit: true,
       from,
       to: now,
       buckets: bk,
@@ -603,11 +592,13 @@ export async function startApp({ root, fetchFn = fetch, doc = document, config, 
     chart($('[data-chart="hosting"]'), {
       type: "bar",
       unit: "bytes",
-      height: 190,
+      height: 170,
+      fit: true,
       from: m.minutes[0],
       to: m.minutes[29] + MIN,
       buckets: bk,
       stacked: true,
+      title: "Data served per minute",
       axisWidth: 58,
       series: m.sites.map((s, i) => ({ label: s.name, color: SITE_COLORS[i % SITE_COLORS.length], values: s.served ?? [] })),
       tooltip: (i) =>
@@ -625,8 +616,7 @@ export async function startApp({ root, fetchFn = fetch, doc = document, config, 
         return (
           `<div class="row" data-open="site:${esc(s.id)}" ${OPENER} aria-label="Open history for site ${esc(s.name)}">` +
           `<i class="sw" style="background:${color}"></i><span class="name">${esc(s.name)}.web.app</span><span class="value">${bytes(t)}</span>` +
-          `<span class="detail"><span>served in 30 min</span><span>${bytes(last(s.served) ?? 0)} / min now</span></span>` +
-          `<span class="sharebar"><b style="width:${share.toFixed(1)}%;background:${color}"></b></span></div>`
+          `<span class="detail"><span>${share.toFixed(0)}% of 30-min traffic</span><span>${bytes(last(s.served) ?? 0)}/min now</span></span></div>`
         );
       })
       .join("");
@@ -640,25 +630,28 @@ export async function startApp({ root, fetchFn = fetch, doc = document, config, 
         const other = state.other[j.id];
         const cells = daySquares(j.id, runs, now);
         const res = j.lastResult;
+        const lastRun = j.lastRunAt ? `Last run ${fFull(j.lastRunAt)}` : "No run yet";
         const badge =
           res === "success"
-            ? '<span class="badge ok">✓ Succeeded</span>'
+            ? `<span class="badge ok" title="${esc(lastRun)}">✓ Succeeded</span>`
             : res === "failed" || res === "missed"
-              ? `<span class="badge bad">${res === "failed" ? "Failed" : "Missed"}</span>`
-              : '<span class="badge none">No result</span>';
+              ? `<span class="badge bad" title="${esc(lastRun)}">${res === "failed" ? "Failed" : "Missed"}</span>`
+              : `<span class="badge none" title="${esc(lastRun)}">No result</span>`;
         const recent = (runs ?? []).filter((r) => r.result === "success" || r.result === "failed" || r.result === "missed");
         const okCount = recent.filter((r) => r.result === "success").length;
+        const sched = `${j.schedule} IST${j.nextRun ? ` · next in ${until(j.nextRun - now)}` : ""}`;
+        const note = [
+          recent.length ? `${okCount} of ${recent.length} runs succeeded in 30 days` : "",
+          other?.count ? `${other.count} off-schedule call${other.count > 1 ? "s" : ""} not counted` : "No off-schedule calls",
+        ].filter(Boolean);
+        const noteTitle = other?.count ? `${other.count} off-schedule calls in 30 days (${other.failed} with errors), not counted as runs` : "No off-schedule calls in 30 days";
         return (
           `<div class="job" data-open="job:${esc(j.id)}" data-job="${esc(j.id)}" ${OPENER} aria-label="Open run history for ${esc(j.name)}">` +
-          `<div class="job-head"><div><div class="job-name">${esc(j.name)}</div><div class="job-sched">${ICON.clock}${esc(j.schedule)} IST</div></div>${badge}</div>` +
-          `<div class="job-grid"><div><span>Last run</span><b>${j.lastRunAt ? esc(fFull(j.lastRunAt)) : DASH}</b></div>` +
-          `<div><span>Next run</span><b>${j.nextRun ? `in ${until(j.nextRun - now)}` : DASH}</b><small>${j.nextRun ? esc(fDayTime(j.nextRun)) : ""}</small></div></div>` +
-          `<div><div class="days-caption"><span>Last 14 days</span><span>${recent.length ? `${okCount} of ${recent.length} runs succeeded (30 days)` : ""}</span></div>` +
+          `<div class="job-head"><span class="job-name">${esc(j.name)}</span>${badge}</div>` +
+          `<div class="job-sched" title="${esc(`${sched}${j.nextRun ? ` (${fDayTime(j.nextRun)})` : ""}`)}">${ICON.clock}<span>${esc(sched)}</span></div>` +
           `<div class="days">${cells.map((c) => `<i class="${c.cls}" title="${esc(c.label)}"></i>`).join("")}</div>` +
-          `<div class="days-labels">${cells.map((c) => `<span>${c.letter}</span>`).join("")}</div></div>` +
-          `<div class="job-note">${
-            other?.count ? esc(`${other.count} off-schedule call${other.count > 1 ? "s" : ""} in 30 days (${other.failed} with errors), not counted as runs`) : "No off-schedule calls in 30 days"
-          }</div></div>`
+          `<div class="days-labels">${cells.map((c) => `<span>${c.letter}</span>`).join("")}</div>` +
+          `<div class="job-note" title="${esc(noteTitle)}">${esc(note.join(" · "))}</div></div>`
         );
       })
       .join("");
@@ -667,20 +660,25 @@ export async function startApp({ root, fetchFn = fetch, doc = document, config, 
   function renderAll() {
     const m = state.model;
     const h = m ? health(m) : null;
-    renderHeader(m, h);
+    renderHeader(m);
     const sections = $("[data-sections]");
+    const kpis = $("[data-kpis]");
     if (state.mode === "off") {
-      $("#overview").className = "banner";
+      $("[data-health]").className = "health paused";
       $("[data-banner-icon]").innerHTML = ICON.pause;
       $("[data-banner-title]").textContent = "Monitoring paused";
-      $("[data-banner-sub]").textContent = "The kill switch is on. Set mode to \"live\" in config.json to resume.";
-      $("[data-facts]").innerHTML = "";
+      const sub = $("[data-banner-sub]");
+      sub.hidden = false;
+      sub.textContent = 'The kill switch is on. Set mode to "live" in config.json to resume.';
+      $("[data-banner-reasons]").hidden = true;
       sections.hidden = true;
+      kpis.hidden = true;
       return;
     }
     sections.hidden = false;
+    kpis.hidden = false;
     if (!m || !h) return;
-    renderBanner(m, h);
+    renderHealth(m, h);
     renderKpis(m);
     renderDatabase(m);
     renderFunctions(m);
@@ -1061,7 +1059,7 @@ export async function startApp({ root, fetchFn = fetch, doc = document, config, 
       if ((REFRESH_CHOICES as readonly number[]).includes(s)) {
         state.refresh = s;
         write("pm-refresh", String(s));
-        renderHeader(state.model, state.model ? health(state.model) : null);
+        renderHeader(state.model);
         schedule();
       }
       return;
@@ -1107,21 +1105,6 @@ export async function startApp({ root, fetchFn = fetch, doc = document, config, 
   $("[data-fn-search]").addEventListener("input", onSearch);
   doc.addEventListener("visibilitychange", onVisibility);
 
-  // The section in view is highlighted in the nav.
-  let io: IntersectionObserver | null = null;
-  if ("IntersectionObserver" in win) {
-    const links = [...root.querySelectorAll<HTMLElement>("[data-nav]")];
-    io = new win.IntersectionObserver(
-      (entries) => {
-        for (const en of entries) if (en.isIntersecting) links.forEach((a) => a.classList.toggle("active", a.dataset.nav === en.target.id));
-      },
-      { rootMargin: "-40% 0px -55% 0px" },
-    );
-    for (const id of ["overview", "database", "functions", "storage", "hosting", "jobs"]) {
-      const el = root.querySelector(`#${id}`);
-      if (el) io.observe(el);
-    }
-  }
   $("[data-theme-btn]").setAttribute("aria-label", doc.documentElement.dataset.theme === "dark" ? "Switch to white theme" : "Switch to dark theme");
 
   function stop() {
@@ -1132,7 +1115,6 @@ export async function startApp({ root, fetchFn = fetch, doc = document, config, 
     root.removeEventListener("click", onClick);
     doc.removeEventListener("keydown", onKey);
     doc.removeEventListener("visibilitychange", onVisibility);
-    io?.disconnect();
   }
 
   // ---------- start ----------

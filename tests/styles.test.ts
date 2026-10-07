@@ -43,8 +43,33 @@ describe("self-contained", () => {
   });
 
   it("keeps the responsive breakpoints, focus ring and reduced motion", () => {
-    for (const width of [460, 760, 1024, 1100, 1280, 1360]) expect(css).toContain(`@media (max-width: ${width}px)`);
+    for (const width of [460, 760, 1199]) expect(css).toContain(`@media (max-width: ${width}px)`);
+    for (const height of [680, 760]) expect(css).toContain(`@media (max-height: ${height}px)`);
     expect(css).toMatch(/:focus-visible \{[^}]*outline/);
     expect(css).toContain("@media (prefers-reduced-motion: reduce)");
+  });
+});
+
+describe("one screen on a PC or laptop", () => {
+  const rule = (selector: string) => css.match(new RegExp(`(?:^|\\n)${selector.replace(/[.#[\]()]/g, "\\$&")} \\{([^}]*)\\}`))?.[1] ?? "";
+
+  it("makes the page exactly one window tall, with a floor for tiny windows", () => {
+    expect(rule(".page")).toContain("height: 100dvh");
+    expect(rule(".page")).toContain("min-height: 600px");
+    expect(rule(".main")).toContain("min-height: 0");
+  });
+
+  it("lays the cards out on a fixed grid that fills the rest of the window", () => {
+    const board = rule(".board");
+    expect(board).toContain("flex: 1 1 auto");
+    expect(board).toContain("grid-template-rows: repeat(2, minmax(0, 1fr))");
+    expect(board).toContain('grid-template-areas: "fn db st" "fn ho jobs"');
+    expect(rule("table.fn")).toContain("height: 100%");
+    expect(rule(".chart.fit")).toContain("flex: 1 1 0");
+  });
+
+  it("lets narrower screens stack and scroll instead", () => {
+    const narrow = css.slice(css.indexOf("@media (max-width: 1199px)"));
+    expect(narrow).toMatch(/\.page \{ height: auto; min-height: 100vh; \}/);
   });
 });
